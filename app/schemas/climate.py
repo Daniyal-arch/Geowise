@@ -3,14 +3,11 @@ GEOWISE - Climate Data Schemas
 app/schemas/climate.py
 
 Pydantic schemas for Open-Meteo climate data (ERA5 reanalysis).
-
-NOTE: Climate data is fetched from Open-Meteo API, not stored in database.
-Native resolution: ~25km grid (coarsest dataset - determines analysis resolution).
 """
 
 from datetime import date, datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from app.schemas.common import Point, DateRange
 
@@ -20,20 +17,7 @@ from app.schemas.common import Point, DateRange
 # ============================================================================
 
 class ClimateQueryRequest(BaseModel):
-    """
-    Request historical climate data for a location.
-    
-    Used by: GET /api/v1/climate/historical
-    
-    Example:
-        {
-            "latitude": 30.3753,
-            "longitude": 69.3451,
-            "start_date": "2025-01-01",
-            "end_date": "2025-01-31",
-            "include_soil_moisture": false
-        }
-    """
+    """Request historical climate data for a location."""
     # Location
     latitude: float = Field(..., ge=-90, le=90, description="Latitude in decimal degrees")
     longitude: float = Field(..., ge=-180, le=180, description="Longitude in decimal degrees")
@@ -45,18 +29,20 @@ class ClimateQueryRequest(BaseModel):
     # Optional parameters
     include_soil_moisture: bool = Field(
         default=False,
-        description="Include soil moisture data (may not be available for all regions/dates)"
+        description="Include soil moisture data"
     )
     
-    @validator('end_date')
-    def end_after_start(cls, v, values):
+    @field_validator('end_date')
+    @classmethod
+    def end_after_start(cls, v, info):
         """Ensure end_date >= start_date"""
-        start = values.get('start_date')
+        start = info.data.get('start_date')
         if start and v < start:
             raise ValueError('end_date must be on or after start_date')
         return v
     
-    @validator('end_date')
+    @field_validator('end_date')
+    @classmethod
     def not_future(cls, v):
         """Prevent querying future dates"""
         if v > date.today():
@@ -67,8 +53,8 @@ class ClimateQueryRequest(BaseModel):
         """Calculate number of days in query"""
         return (self.end_date - self.start_date).days + 1
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "latitude": 30.3753,
                 "longitude": 69.3451,
@@ -77,45 +63,41 @@ class ClimateQueryRequest(BaseModel):
                 "include_soil_moisture": False
             }
         }
+    )
 
 
 class ClimateCountrySummaryRequest(BaseModel):
-    """
-    Request climate summary for a country.
-    
-    Used by: GET /api/v1/climate/country-summary
-    
-    Uses default country center point or multiple sample points for better coverage.
-    """
+    """Request climate summary for a country."""
     country_iso: str = Field(..., min_length=3, max_length=3, 
                             description="3-letter ISO country code")
     
     start_date: date = Field(..., description="Start date")
     end_date: date = Field(..., description="End date")
     
-    # Optional: provide specific sample points instead of using country center
     sample_points: Optional[List[Point]] = Field(
         None,
-        description="Custom sample points (if not provided, uses country center)"
+        description="Custom sample points"
     )
     
     include_soil_moisture: bool = Field(default=False)
     
-    @validator('country_iso')
+    @field_validator('country_iso')
+    @classmethod
     def uppercase_country(cls, v):
         return v.upper()
     
-    @validator('end_date')
-    def validate_date_range(cls, v, values):
-        start = values.get('start_date')
+    @field_validator('end_date')
+    @classmethod
+    def validate_date_range(cls, v, info):
+        start = info.data.get('start_date')
         if start and v < start:
             raise ValueError('end_date must be >= start_date')
         if v > date.today():
             raise ValueError('end_date cannot be in the future')
         return v
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "start_date": "2025-01-01",
@@ -124,30 +106,25 @@ class ClimateCountrySummaryRequest(BaseModel):
                 "include_soil_moisture": False
             }
         }
+    )
 
 
 class FireRiskAssessmentRequest(BaseModel):
-    """
-    Request fire risk assessment based on climate conditions.
-    
-    Used by: POST /api/v1/climate/fire-risk
-    
-    Analyzes temperature, precipitation, wind, and soil moisture.
-    """
+    """Request fire risk assessment based on climate conditions."""
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     
     start_date: date = Field(...)
     end_date: date = Field(...)
     
-    # Risk thresholds (optional - uses defaults if not provided)
+    # Risk thresholds
     high_temp_threshold: float = Field(default=30.0, description="°C above which fire risk increases")
     low_precip_threshold: float = Field(default=1.0, description="mm/day below which fire risk increases")
     high_wind_threshold: float = Field(default=20.0, description="km/h above which fire risk increases")
     low_soil_moisture_threshold: float = Field(default=0.2, description="m³/m³ below which fire risk increases")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "latitude": 30.5,
                 "longitude": 70.5,
@@ -157,6 +134,7 @@ class FireRiskAssessmentRequest(BaseModel):
                 "low_precip_threshold": 1.0
             }
         }
+    )
 
 
 # ============================================================================
@@ -164,9 +142,7 @@ class FireRiskAssessmentRequest(BaseModel):
 # ============================================================================
 
 class DailyClimateData(BaseModel):
-    """
-    Climate data for a single day.
-    """
+    """Climate data for a single day."""
     date: date = Field(..., description="Date (YYYY-MM-DD)")
     
     # Temperature (°C)
@@ -183,11 +159,11 @@ class DailyClimateData(BaseModel):
     # Humidity (%)
     relative_humidity_mean: Optional[float] = Field(None, description="Mean relative humidity (%)")
     
-    # Soil moisture (m³/m³) - optional
+    # Soil moisture (m³/m³)
     soil_moisture_0_7cm: Optional[float] = Field(None, description="Surface soil moisture (m³/m³)")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "date": "2025-01-15",
                 "temperature_max": 28.5,
@@ -197,14 +173,11 @@ class DailyClimateData(BaseModel):
                 "relative_humidity_mean": 45.6
             }
         }
+    )
 
 
 class ClimateTimeSeriesResponse(BaseModel):
-    """
-    Historical climate data as time series.
-    
-    Response from: GET /api/v1/climate/historical
-    """
+    """Historical climate data as time series."""
     location: Point = Field(..., description="Query location")
     date_range: Dict[str, str] = Field(..., description="Date range queried")
     
@@ -219,28 +192,23 @@ class ClimateTimeSeriesResponse(BaseModel):
     resolution: str = Field(default="~25km", description="Native grid resolution")
     last_updated: datetime = Field(..., description="When data was fetched")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "location": {"latitude": 30.3753, "longitude": 69.3451},
                 "date_range": {"start": "2025-01-01", "end": "2025-01-31"},
                 "daily_data": [],
-                "summary": {
-                    "days": 31,
-                    "avg_temperature": 20.5,
-                    "total_precipitation": 15.3
-                },
+                "summary": {"days": 31, "avg_temperature": 20.5},
                 "source": "Open-Meteo ERA5",
                 "resolution": "~25km",
                 "last_updated": "2025-01-15T10:30:00Z"
             }
         }
+    )
 
 
 class ClimateStatistics(BaseModel):
-    """
-    Statistical summary of climate variables.
-    """
+    """Statistical summary of climate variables."""
     variable_name: str = Field(..., description="Climate variable name")
     unit: str = Field(..., description="Unit of measurement")
     
@@ -250,8 +218,8 @@ class ClimateStatistics(BaseModel):
     mean: Optional[float] = Field(None, description="Mean value")
     total: Optional[float] = Field(None, description="Total (for precipitation)")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "variable_name": "temperature_max",
                 "unit": "°C",
@@ -262,30 +230,24 @@ class ClimateStatistics(BaseModel):
                 "total": None
             }
         }
+    )
 
 
 class ClimateCountrySummaryResponse(BaseModel):
-    """
-    Climate summary for a country (aggregated from sample points).
-    
-    Response from: GET /api/v1/climate/country-summary
-    """
+    """Climate summary for a country."""
     country_iso: str = Field(..., description="Country ISO code")
     date_range: Dict[str, str] = Field(..., description="Date range")
     
     sample_points_count: int = Field(..., description="Number of sample points used")
     sample_locations: List[Point] = Field(..., description="Locations sampled")
     
-    # Aggregated climate data (averaged across sample points)
     climate_data: Dict[str, Any] = Field(..., description="Aggregated daily data")
-    
-    # Statistics
     statistics: List[ClimateStatistics] = Field(..., description="Variable statistics")
     
     last_updated: datetime = Field(...)
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "date_range": {"start": "2025-01-01", "end": "2025-01-31"},
@@ -296,24 +258,19 @@ class ClimateCountrySummaryResponse(BaseModel):
                 "last_updated": "2025-01-15T10:30:00Z"
             }
         }
+    )
 
 
 class FireRiskLevel(str):
     """Fire risk classification"""
-    EXTREME = "EXTREME"  # Risk score > 70
-    HIGH = "HIGH"        # Risk score 50-70
-    MODERATE = "MODERATE"  # Risk score 30-50
-    LOW = "LOW"          # Risk score < 30
+    EXTREME = "EXTREME"
+    HIGH = "HIGH"
+    MODERATE = "MODERATE"
+    LOW = "LOW"
 
 
 class FireRiskAssessmentResponse(BaseModel):
-    """
-    Fire risk assessment based on climate conditions.
-    
-    Response from: POST /api/v1/climate/fire-risk
-    
-    Analyzes multiple fire risk factors to produce overall risk score.
-    """
+    """Fire risk assessment based on climate conditions."""
     location: Point = Field(..., description="Assessment location")
     date_range: Dict[str, str] = Field(..., description="Period analyzed")
     
@@ -332,8 +289,8 @@ class FireRiskAssessmentResponse(BaseModel):
     assessment: str = Field(..., description="Human-readable assessment")
     recommendations: Optional[List[str]] = Field(None, description="Risk mitigation recommendations")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "location": {"latitude": 30.5, "longitude": 70.5},
                 "date_range": {"start": "2025-01-01", "end": "2025-01-31"},
@@ -345,20 +302,14 @@ class FireRiskAssessmentResponse(BaseModel):
                 "windy_days": 15,
                 "low_soil_moisture_days": 20,
                 "assessment": "HIGH fire risk conditions detected",
-                "recommendations": [
-                    "Monitor fire activity closely",
-                    "Restrict outdoor burning"
-                ]
+                "recommendations": ["Monitor fire activity closely"]
             }
         }
+    )
 
 
 class ClimateHealthCheckResponse(BaseModel):
-    """
-    Open-Meteo API health check response.
-    
-    Response from: GET /api/v1/climate/health
-    """
+    """Open-Meteo API health check response."""
     status: str = Field(..., description="'healthy' or 'unhealthy'")
     api_accessible: bool = Field(..., description="Whether Open-Meteo API is accessible")
     status_code: Optional[int] = Field(None, description="HTTP status code")
@@ -366,8 +317,8 @@ class ClimateHealthCheckResponse(BaseModel):
     timestamp: datetime = Field(..., description="Health check timestamp")
     error: Optional[str] = Field(None, description="Error message if unhealthy")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "healthy",
                 "api_accessible": True,
@@ -376,28 +327,4 @@ class ClimateHealthCheckResponse(BaseModel):
                 "timestamp": "2025-01-15T10:30:00Z"
             }
         }
-
-
-# Example usage
-if __name__ == "__main__":
-    """Test climate schemas"""
-    
-    # Test ClimateQueryRequest
-    query = ClimateQueryRequest(
-        latitude=30.3753,
-        longitude=69.3451,
-        start_date=date(2025, 1, 1),
-        end_date=date(2025, 1, 31)
     )
-    print(f"✅ ClimateQueryRequest: ({query.latitude}, {query.longitude}), {query.days_count()} days")
-    
-    # Test DailyClimateData
-    daily = DailyClimateData(
-        date=date(2025, 1, 15),
-        temperature_max=28.5,
-        temperature_min=15.2,
-        precipitation_sum=0.0
-    )
-    print(f"✅ DailyClimateData: {daily.date}, temp: {daily.temperature_min}°C - {daily.temperature_max}°C")
-    
-    print("\n✅ Climate schemas loaded successfully!")

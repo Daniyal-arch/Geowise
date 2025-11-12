@@ -3,18 +3,16 @@ GEOWISE - Fire Data Schemas
 app/schemas/fires.py
 
 Pydantic schemas for NASA FIRMS fire detection data.
-
-REQUEST SCHEMAS: Validate incoming API requests
-RESPONSE SCHEMAS: Format outgoing API responses
 """
 
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
+# Import only what we need directly, avoid circular imports
 from app.schemas.common import (
-    BoundingBox, DateRange, PaginationParams, PaginationMetadata,
-    H3ResolutionEnum, GeoJSONFeatureCollection, ConfidenceLevel, SortOrder
+    BoundingBox, PaginationMetadata,
+    H3ResolutionEnum, ConfidenceLevel, SortOrder
 )
 
 
@@ -27,15 +25,6 @@ class FireQueryRequest(BaseModel):
     Query fires by geographic area and time period.
     
     Used by: GET /api/v1/fires
-    
-    Example:
-        {
-            "bbox": {"lat_min": 23, "lon_min": 60, "lat_max": 37, "lon_max": 77.5},
-            "start_date": "2025-01-01",
-            "end_date": "2025-01-10",
-            "min_frp": 10.0,
-            "confidence": "h"
-        }
     """
     # Spatial filter (choose one)
     bbox: Optional[BoundingBox] = Field(None, description="Bounding box for spatial query")
@@ -65,57 +54,47 @@ class FireQueryRequest(BaseModel):
     sort_by: Optional[str] = Field(default="acq_date", description="Field to sort by")
     sort_order: Optional[SortOrder] = Field(default=SortOrder.DESC)
     
-    @validator('country_iso')
+    @field_validator('country_iso')
+    @classmethod
     def uppercase_country(cls, v):
         """Convert country code to uppercase"""
         return v.upper() if v else None
     
-    @root_validator
-    def validate_spatial_filter(cls, values):
+    @model_validator(mode='after')
+    def validate_spatial_filter(self):
         """Must provide either bbox OR country_iso"""
-        bbox = values.get('bbox')
-        country = values.get('country_iso')
-        
-        if not bbox and not country:
+        if not self.bbox and not self.country_iso:
             raise ValueError('Must provide either bbox or country_iso')
         
-        if bbox and country:
+        if self.bbox and self.country_iso:
             raise ValueError('Provide only one: bbox or country_iso')
         
-        return values
+        return self
     
-    @root_validator
-    def validate_temporal_filter(cls, values):
-        """
-        Must provide either (start_date + end_date) OR days.
-        
-        NASA FIRMS only has last 10 days of data.
-        """
-        start = values.get('start_date')
-        end = values.get('end_date')
-        days = values.get('days')
-        
-        if days:
+    @model_validator(mode='after')
+    def validate_temporal_filter(self):
+        """Must provide either (start_date + end_date) OR days"""
+        if self.days:
             # Using 'days' - ignore start/end dates
-            if start or end:
+            if self.start_date or self.end_date:
                 raise ValueError('When using "days", do not provide start_date or end_date')
         else:
             # Using date range - both required
-            if not start or not end:
+            if not self.start_date or not self.end_date:
                 raise ValueError('Must provide both start_date and end_date, or use "days"')
             
-            if end < start:
+            if self.end_date < self.start_date:
                 raise ValueError('end_date must be after start_date')
             
             # Check if date range exceeds 10 days
-            days_diff = (end - start).days + 1
+            days_diff = (self.end_date - self.start_date).days + 1
             if days_diff > 10:
                 raise ValueError('NASA FIRMS data limited to 10 days. Use smaller date range.')
         
-        return values
+        return self
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "days": 7,
@@ -124,16 +103,11 @@ class FireQueryRequest(BaseModel):
                 "limit": 100
             }
         }
+    )
 
 
 class FireAggregationRequest(BaseModel):
-    """
-    Request aggregated fire statistics at H3 resolution.
-    
-    Used by: GET /api/v1/fires/aggregated
-    
-    For map visualization - returns hexagons instead of individual fires.
-    """
+    """Request aggregated fire statistics at H3 resolution."""
     bbox: Optional[BoundingBox] = Field(None)
     country_iso: Optional[str] = Field(None, min_length=3, max_length=3)
     
@@ -151,29 +125,23 @@ class FireAggregationRequest(BaseModel):
     # Return format
     format: str = Field(default="geojson", description="Response format: 'geojson' or 'json'")
     
-    @root_validator
-    def validate_filters(cls, values):
+    @model_validator(mode='after')
+    def validate_filters(self):
         """Same validations as FireQueryRequest"""
         # Check spatial filter
-        bbox = values.get('bbox')
-        country = values.get('country_iso')
-        if not bbox and not country:
+        if not self.bbox and not self.country_iso:
             raise ValueError('Must provide either bbox or country_iso')
-        if bbox and country:
+        if self.bbox and self.country_iso:
             raise ValueError('Provide only one: bbox or country_iso')
         
         # Check temporal filter
-        start = values.get('start_date')
-        end = values.get('end_date')
-        days = values.get('days')
-        
-        if not days and not (start and end):
+        if not self.days and not (self.start_date and self.end_date):
             raise ValueError('Must provide date range or days')
         
-        return values
+        return self
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "days": 7,
@@ -181,46 +149,42 @@ class FireAggregationRequest(BaseModel):
                 "format": "geojson"
             }
         }
+    )
+
+
+# ============================================================================
+# BASE FIRE DETECTION MODEL (No dependencies)
+# ============================================================================
+
+class FireDetectionBase(BaseModel):
+    """Base fire detection fields without circular dependencies."""
+    id: str = Field(..., description="Unique fire detection ID")
+    latitude: float = Field(..., description="Latitude in decimal degrees")
+    longitude: float = Field(..., description="Longitude in decimal degrees")
+    h3_index_9: str = Field(..., description="H3 index at resolution 9 (174m)")
+    brightness: float = Field(..., description="Brightness temperature (Kelvin)")
+    confidence: str = Field(..., description="Confidence level")
+    satellite: str = Field(..., description="Satellite identifier")
+    acq_date: datetime = Field(..., description="Acquisition date/time (UTC)")
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================================================
 # RESPONSE SCHEMAS (Output Formatting)
 # ============================================================================
 
-class FireDetectionResponse(BaseModel):
-    """
-    Single fire detection record.
-    
-    Converted from SQLAlchemy FireDetection model for API response.
-    """
-    id: str = Field(..., description="Unique fire detection ID")
-    
-    # Location
-    latitude: float = Field(..., description="Latitude in decimal degrees")
-    longitude: float = Field(..., description="Longitude in decimal degrees")
-    
-    # H3 indexes (for different zoom levels)
-    h3_index_9: str = Field(..., description="H3 index at resolution 9 (174m)")
+class FireDetectionResponse(FireDetectionBase):
+    """Single fire detection record."""
     h3_index_5: Optional[str] = Field(None, description="H3 index at resolution 5 (20km)")
-    
-    # Fire characteristics
-    brightness: float = Field(..., description="Brightness temperature (Kelvin)")
     bright_ti5: Optional[float] = Field(None, description="Brightness temperature I-5")
     frp: Optional[float] = Field(None, description="Fire Radiative Power (MW)")
-    
-    # Detection metadata
-    confidence: str = Field(..., description="Confidence: 'l' (low), 'n' (nominal), 'h' (high)")
-    satellite: str = Field(..., description="Satellite identifier")
     instrument: Optional[str] = Field(None, description="Instrument name")
-    
-    # Temporal
-    acq_date: datetime = Field(..., description="Acquisition date/time (UTC)")
     acq_time: Optional[str] = Field(None, description="Acquisition time (HHMM)")
     daynight: Optional[str] = Field(None, description="'D' (day) or 'N' (night)")
     
-    class Config:
-        orm_mode = True  # Allow conversion from SQLAlchemy model
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "abc123-def456",
                 "latitude": 30.5128,
@@ -236,20 +200,17 @@ class FireDetectionResponse(BaseModel):
                 "daynight": "D"
             }
         }
+    )
 
 
 class FireListResponse(BaseModel):
-    """
-    Paginated list of fire detections.
-    
-    Used by: GET /api/v1/fires
-    """
+    """Paginated list of fire detections."""
     fires: List[FireDetectionResponse] = Field(..., description="List of fire detections")
     pagination: PaginationMetadata = Field(..., description="Pagination info")
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "fires": [],
                 "pagination": {
@@ -266,12 +227,11 @@ class FireListResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class FireAggregationCell(BaseModel):
-    """
-    Aggregated fire statistics for one H3 hexagon.
-    """
+    """Aggregated fire statistics for one H3 hexagon."""
     h3_index: str = Field(..., description="H3 hexagon identifier")
     resolution: int = Field(..., description="H3 resolution level")
     
@@ -290,8 +250,8 @@ class FireAggregationCell(BaseModel):
     centroid_lat: Optional[float] = Field(None, description="Cell center latitude")
     centroid_lon: Optional[float] = Field(None, description="Cell center longitude")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "h3_index": "851e2049fffffff",
                 "resolution": 5,
@@ -306,20 +266,17 @@ class FireAggregationCell(BaseModel):
                 "centroid_lon": 70.5
             }
         }
+    )
 
 
 class FireAggregationResponse(BaseModel):
-    """
-    Aggregated fire data at H3 resolution.
-    
-    Can return as GeoJSON (for maps) or regular JSON (for charts).
-    """
+    """Aggregated fire data at H3 resolution."""
     cells: List[FireAggregationCell] = Field(..., description="Aggregated H3 cells")
     metadata: Dict[str, Any] = Field(..., description="Query metadata")
     summary: Dict[str, Any] = Field(..., description="Overall statistics")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "cells": [],
                 "metadata": {
@@ -334,92 +291,178 @@ class FireAggregationResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class FireStatisticsResponse(BaseModel):
-    """
-    Overall fire statistics for a region/time period.
-    
-    Used by: GET /api/v1/fires/statistics
-    """
+    """Overall fire statistics for a region/time period."""
     total_fires: int = Field(..., description="Total fire count")
     date_range: Dict[str, str] = Field(..., description="Date range analyzed")
     region: str = Field(..., description="Region identifier")
     
-    # Intensity statistics
-    frp_statistics: Dict[str, float] = Field(..., description="FRP stats (min, max, avg, total)")
+    frp_statistics: Dict[str, float] = Field(..., description="FRP stats")
     brightness_statistics: Dict[str, float] = Field(..., description="Brightness stats")
-    
-    # Confidence distribution
     confidence_distribution: Dict[str, int] = Field(..., description="Count by confidence level")
-    
-    # Temporal distribution
     fires_by_date: List[Dict[str, Any]] = Field(..., description="Daily fire counts")
-    
-    # Spatial distribution
     fires_by_h3: List[Dict[str, Any]] = Field(..., description="Fire counts by H3 cell")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "total_fires": 3416,
-                "date_range": {
-                    "start": "2025-01-01",
-                    "end": "2025-01-10"
-                },
+                "date_range": {"start": "2025-01-01", "end": "2025-01-10"},
                 "region": "PAK",
-                "frp_statistics": {
-                    "min": 2.1,
-                    "max": 45.7,
-                    "avg": 12.3,
-                    "total": 42028.8
-                },
-                "confidence_distribution": {
-                    "high": 2890,
-                    "nominal": 450,
-                    "low": 76
-                }
+                "frp_statistics": {"min": 2.1, "max": 45.7, "avg": 12.3, "total": 42028.8},
+                "confidence_distribution": {"high": 2890, "nominal": 450, "low": 76}
             }
         }
+    )
 
 
-# ============================================================================
-# GEOJSON RESPONSE SCHEMAS
-# ============================================================================
-
-class FireGeoJSONResponse(GeoJSONFeatureCollection):
-    """
-    Fire data in GeoJSON format for mapping.
-    
-    Extends base GeoJSON schema with fire-specific metadata.
-    """
+class FireGeoJSONResponse(BaseModel):
+    """Fire data in GeoJSON format for mapping."""
     metadata: Dict[str, Any] = Field(default_factory=lambda: {
         "source": "NASA FIRMS",
         "dataset": "VIIRS_SNPP_NRT",
         "resolution": "375m"
     })
+    
+    # GeoJSON structure
+    type: str = Field(default="FeatureCollection")
+    features: List[Dict[str, Any]] = Field(default_factory=list, description="GeoJSON features")
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "type": "FeatureCollection",
+                "metadata": {
+                    "source": "NASA FIRMS",
+                    "dataset": "VIIRS_SNPP_NRT",
+                    "resolution": "375m",
+                    "total_features": 150
+                },
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Point",
+                            "coordinates": [70.3456, 30.5128]
+                        },
+                        "properties": {
+                            "id": "abc123-def456",
+                            "brightness": 320.5,
+                            "frp": 12.5,
+                            "confidence": "h",
+                            "acq_date": "2025-01-15T10:30:00Z"
+                        }
+                    }
+                ]
+            }
+        }
+    )
 
 
-# Example usage
-if __name__ == "__main__":
-    """Test fire schemas"""
+class FireAlertResponse(BaseModel):
+    """Fire alert notification format."""
+    alert_id: str = Field(..., description="Unique alert identifier")
+    alert_type: str = Field(..., description="Alert type (e.g., 'new_fire', 'high_intensity')")
+    severity: str = Field(..., description="Alert severity level")
+    timestamp: datetime = Field(..., description="Alert generation time")
     
-    # Test FireQueryRequest
-    query = FireQueryRequest(
-        country_iso="PAK",
-        days=7,
-        min_frp=10.0,
-        confidence=ConfidenceLevel.HIGH,
-        limit=100
+    # Fire details - use the base model to avoid recursion
+    fire_data: FireDetectionBase = Field(..., description="Fire detection details")
+    
+    # Location context
+    location_context: Dict[str, Any] = Field(..., description="Location context (country, region, etc.)")
+    
+    # Alert metadata
+    triggered_by: Dict[str, Any] = Field(..., description="What triggered this alert")
+    recommendations: List[str] = Field(..., description="Recommended actions")
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "alert_id": "alert_20250115_12345",
+                "alert_type": "high_intensity_fire",
+                "severity": "high",
+                "timestamp": "2025-01-15T10:35:00Z",
+                "fire_data": {
+                    "id": "abc123-def456",
+                    "latitude": 30.5128,
+                    "longitude": 70.3456,
+                    "brightness": 420.5,
+                    "frp": 45.2,
+                    "confidence": "h"
+                },
+                "location_context": {
+                    "country": "Pakistan",
+                    "region": "Punjab",
+                    "population_density": "medium",
+                    "protected_area": False
+                },
+                "triggered_by": {
+                    "frp_threshold": 40.0,
+                    "brightness_threshold": 400.0
+                },
+                "recommendations": [
+                    "Dispatch fire response team",
+                    "Issue public health advisory",
+                    "Monitor wind direction changes"
+                ]
+            }
+        }
     )
-    print(f"✅ FireQueryRequest: {query.country_iso}, {query.days} days")
+
+
+class FireTrendResponse(BaseModel):
+    """Fire trend analysis over time."""
+    period: Dict[str, str] = Field(..., description="Analysis period")
+    region: str = Field(..., description="Region analyzed")
     
-    # Test FireAggregationRequest
-    agg_req = FireAggregationRequest(
-        country_iso="PAK",
-        days=7,
-        resolution=H3ResolutionEnum.DISPLAY
+    # Trend metrics
+    total_fires: int = Field(..., description="Total fires in period")
+    trend_direction: str = Field(..., description="'increasing', 'decreasing', 'stable'")
+    trend_percentage: float = Field(..., description="Percentage change from previous period")
+    
+    # Daily breakdown
+    daily_totals: List[Dict[str, Any]] = Field(..., description="Fires by day")
+    
+    # Hotspot analysis
+    hotspots: List[Dict[str, Any]] = Field(..., description="Areas with highest fire density")
+    
+    # Comparative analysis
+    comparison_to_previous: Dict[str, Any] = Field(..., description="Comparison to previous period")
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "period": {
+                    "start": "2025-01-01",
+                    "end": "2025-01-10"
+                },
+                "region": "PAK",
+                "total_fires": 3416,
+                "trend_direction": "increasing",
+                "trend_percentage": 15.7,
+                "daily_totals": [
+                    {"date": "2025-01-01", "count": 285},
+                    {"date": "2025-01-02", "count": 312}
+                ],
+                "hotspots": [
+                    {
+                        "h3_index": "851e2049fffffff",
+                        "fire_count": 45,
+                        "region_name": "Central Punjab"
+                    }
+                ],
+                "comparison_to_previous": {
+                    "previous_period_fires": 2952,
+                    "change_percentage": 15.7,
+                    "notable_changes": [
+                        "Increased activity in Punjab region",
+                        "Decreased activity in northern areas"
+                    ]
+                }
+            }
+        }
     )
-    print(f"✅ FireAggregationRequest: Resolution {agg_req.resolution}")
-    
-    print("\n✅ Fire schemas loaded successfully!")

@@ -10,7 +10,7 @@ These schemas validate requests and format API responses.
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from app.schemas.common import H3ResolutionEnum
 
@@ -24,9 +24,6 @@ class ForestStatsRequest(BaseModel):
     Request forest statistics for a country.
     
     Used by: GET /api/v1/forest/stats
-    
-    Example:
-        GET /api/v1/forest/stats?country_iso=PAK&start_year=2001&end_year=2024
     """
     country_iso: str = Field(..., min_length=3, max_length=3, 
                             description="3-letter ISO country code")
@@ -36,27 +33,30 @@ class ForestStatsRequest(BaseModel):
     end_year: Optional[int] = Field(None, ge=2001, le=2024,
                                    description="End year for analysis")
     
-    @validator('country_iso')
+    @field_validator('country_iso')
+    @classmethod
     def uppercase_country(cls, v):
         """Convert to uppercase"""
         return v.upper()
     
-    @validator('end_year')
-    def end_after_start(cls, v, values):
+    @field_validator('end_year')
+    @classmethod
+    def end_after_start(cls, v, info):
         """Ensure end_year >= start_year"""
-        start = values.get('start_year')
+        start = info.data.get('start_year')
         if start and v and v < start:
             raise ValueError('end_year must be >= start_year')
         return v
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "start_year": 2001,
                 "end_year": 2024
             }
         }
+    )
 
 
 class ForestTrendRequest(BaseModel):
@@ -72,17 +72,19 @@ class ForestTrendRequest(BaseModel):
         description="Years to compare (e.g., 5 = compare first 5 vs last 5 years)"
     )
     
-    @validator('country_iso')
+    @field_validator('country_iso')
+    @classmethod
     def uppercase_country(cls, v):
         return v.upper()
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "comparison_period_years": 5
             }
         }
+    )
 
 
 class ForestTileRequest(BaseModel):
@@ -90,20 +92,19 @@ class ForestTileRequest(BaseModel):
     Request forest tile configuration for map visualization.
     
     Used by: GET /api/v1/forest/tiles
-    
-    Returns tile URLs for frontend to directly request from GFW servers.
     """
     layers: Optional[List[str]] = Field(
         default=["tree_cover_loss", "tree_cover_density"],
         description="Tile layers to include"
     )
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "layers": ["tree_cover_loss", "tree_cover_density", "tree_cover_gain"]
             }
         }
+    )
 
 
 # ============================================================================
@@ -118,21 +119,23 @@ class YearlyForestLoss(BaseModel):
     loss_hectares: float = Field(..., description="Forest loss in hectares")
     loss_km2: Optional[float] = Field(None, description="Forest loss in square kilometers")
     
-    @validator('loss_km2', always=True)
-    def calculate_km2(cls, v, values):
+    @field_validator('loss_km2', mode='before')
+    @classmethod
+    def calculate_km2(cls, v, info):
         """Auto-calculate km² from hectares if not provided"""
-        if v is None and 'loss_hectares' in values:
-            return values['loss_hectares'] / 100  # 1 km² = 100 hectares
+        if v is None and 'loss_hectares' in info.data:
+            return info.data['loss_hectares'] / 100  # 1 km² = 100 hectares
         return v
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "year": 2024,
                 "loss_hectares": 3456.0,
                 "loss_km2": 34.56
             }
         }
+    )
 
 
 class ForestStatsResponse(BaseModel):
@@ -164,8 +167,8 @@ class ForestStatsResponse(BaseModel):
     last_updated: datetime = Field(..., description="When data was last fetched")
     source: str = Field(default="Global Forest Watch", description="Data source")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "country_name": "Pakistan",
@@ -181,6 +184,7 @@ class ForestStatsResponse(BaseModel):
                 "source": "Global Forest Watch"
             }
         }
+    )
 
 
 class DeforestationTrend(str):
@@ -204,8 +208,6 @@ class ForestTrendResponse(BaseModel):
     Deforestation trend analysis results.
     
     Response from: GET /api/v1/forest/trend
-    
-    Compares early period vs recent period to identify trends.
     """
     country_iso: str = Field(..., description="Country ISO code")
     country_name: str = Field(..., description="Country name")
@@ -228,8 +230,8 @@ class ForestTrendResponse(BaseModel):
     # Interpretation
     interpretation: str = Field(..., description="Human-readable trend interpretation")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "country_iso": "PAK",
                 "country_name": "Pakistan",
@@ -240,15 +242,14 @@ class ForestTrendResponse(BaseModel):
                 "early_period_avg_loss_ha": 2890.0,
                 "recent_period_avg_loss_ha": 3568.0,
                 "total_loss_hectares": 79188.0,
-                "interpretation": "Deforestation is INCREASING at a MODERATE rate. Recent years show 23.5% more forest loss compared to early period."
+                "interpretation": "Deforestation is INCREASING at a MODERATE rate."
             }
         }
+    )
 
 
 class TileLayerConfig(BaseModel):
-    """
-    Configuration for a single tile layer.
-    """
+    """Configuration for a single tile layer."""
     layer_id: str = Field(..., description="Layer identifier")
     tile_url: str = Field(..., description="Tile URL template with {z}/{x}/{y}")
     description: str = Field(..., description="Layer description")
@@ -256,8 +257,8 @@ class TileLayerConfig(BaseModel):
     max_zoom: int = Field(..., description="Maximum zoom level")
     attribution: Optional[str] = Field(None, description="Attribution text")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "layer_id": "tree_cover_loss",
                 "tile_url": "https://tiles.globalforestwatch.org/umd_tree_cover_loss/v1.9/tcd_30/{z}/{x}/{y}.png",
@@ -267,45 +268,29 @@ class TileLayerConfig(BaseModel):
                 "attribution": "Data: Global Forest Watch"
             }
         }
+    )
 
 
 class ForestTileResponse(BaseModel):
-    """
-    Tile layer configuration for map visualization.
-    
-    Response from: GET /api/v1/forest/tiles
-    
-    Frontend uses these URLs to directly request tiles from GFW servers.
-    """
+    """Tile layer configuration for map visualization."""
     tile_layers: Dict[str, TileLayerConfig] = Field(..., description="Available tile layers")
     usage_instructions: str = Field(
         default="Use tile URLs in Mapbox/Leaflet as raster sources",
         description="How to use these tiles"
     )
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
-                "tile_layers": {
-                    "tree_cover_loss": {
-                        "layer_id": "tree_cover_loss",
-                        "tile_url": "https://tiles.globalforestwatch.org/.../tcd_30/{z}/{x}/{y}.png",
-                        "description": "Annual tree cover loss (2001-2024)",
-                        "min_zoom": 3,
-                        "max_zoom": 12
-                    }
-                },
+                "tile_layers": {},
                 "usage_instructions": "Use tile URLs in Mapbox/Leaflet as raster sources"
             }
         }
+    )
 
 
 class ForestHealthCheckResponse(BaseModel):
-    """
-    GFW API health check response.
-    
-    Response from: GET /api/v1/forest/health
-    """
+    """GFW API health check response."""
     status: str = Field(..., description="'healthy' or 'unhealthy'")
     api_accessible: bool = Field(..., description="Whether GFW API is accessible")
     status_code: Optional[int] = Field(None, description="HTTP status code from GFW")
@@ -313,8 +298,8 @@ class ForestHealthCheckResponse(BaseModel):
     timestamp: datetime = Field(..., description="Health check timestamp")
     error: Optional[str] = Field(None, description="Error message if unhealthy")
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "healthy",
                 "api_accessible": True,
@@ -323,14 +308,11 @@ class ForestHealthCheckResponse(BaseModel):
                 "timestamp": "2025-01-15T10:30:00Z"
             }
         }
+    )
 
 
 class AvailableCountriesResponse(BaseModel):
-    """
-    List of countries with available forest data.
-    
-    Response from: GET /api/v1/forest/countries
-    """
+    """List of countries with available forest data."""
     countries: List[Dict[str, str]] = Field(..., description="List of countries with ISO codes")
     total: int = Field(..., description="Total number of countries")
     note: str = Field(
@@ -338,34 +320,15 @@ class AvailableCountriesResponse(BaseModel):
         description="Usage note"
     )
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "countries": [
                     {"iso": "PAK", "name": "Pakistan"},
-                    {"iso": "IND", "name": "India"},
-                    {"iso": "BRA", "name": "Brazil"}
+                    {"iso": "IND", "name": "India"}
                 ],
-                "total": 3,
-                "note": "GFW supports all countries. This is a commonly requested subset."
+                "total": 2,
+                "note": "GFW supports all countries."
             }
         }
-
-
-# Example usage
-if __name__ == "__main__":
-    """Test forest schemas"""
-    
-    # Test ForestStatsRequest
-    stats_req = ForestStatsRequest(
-        country_iso="PAK",
-        start_year=2001,
-        end_year=2024
     )
-    print(f"✅ ForestStatsRequest: {stats_req.country_iso} ({stats_req.start_year}-{stats_req.end_year})")
-    
-    # Test YearlyForestLoss auto-calculation
-    yearly = YearlyForestLoss(year=2024, loss_hectares=3456.0)
-    print(f"✅ YearlyForestLoss: {yearly.loss_hectares} ha = {yearly.loss_km2} km²")
-    
-    print("\n✅ Forest schemas loaded successfully!")

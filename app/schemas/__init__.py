@@ -13,7 +13,7 @@ USAGE:
     from app.schemas.common import BoundingBox, DateRange
 """
 
-# Common schemas (used across multiple endpoints)
+# Import only common schemas at top level - these don't depend on other schemas
 from app.schemas.common import (
     # Geographic
     BoundingBox,
@@ -50,83 +50,7 @@ from app.schemas.common import (
     validate_country_iso,
 )
 
-# Fire schemas
-from app.schemas.fires import (
-    # Requests
-    FireQueryRequest,
-    FireAggregationRequest,
-    
-    # Responses
-    FireDetectionResponse,
-    FireListResponse,
-    FireAggregationCell,
-    FireAggregationResponse,
-    FireStatisticsResponse,
-    FireGeoJSONResponse,
-)
-
-# Forest schemas
-from app.schemas.forest import (
-    # Requests
-    ForestStatsRequest,
-    ForestTrendRequest,
-    ForestTileRequest,
-    
-    # Responses
-    YearlyForestLoss,
-    ForestStatsResponse,
-    ForestTrendResponse,
-    TileLayerConfig,
-    ForestTileResponse,
-    ForestHealthCheckResponse,
-    AvailableCountriesResponse,
-    
-    # Enums
-    DeforestationTrend,
-    TrendSeverity,
-)
-
-# Climate schemas
-from app.schemas.climate import (
-    # Requests
-    ClimateQueryRequest,
-    ClimateCountrySummaryRequest,
-    FireRiskAssessmentRequest,
-    
-    # Responses
-    DailyClimateData,
-    ClimateTimeSeriesResponse,
-    ClimateStatistics,
-    ClimateCountrySummaryResponse,
-    FireRiskAssessmentResponse,
-    ClimateHealthCheckResponse,
-    
-    # Enums
-    FireRiskLevel,
-)
-
-# Analysis schemas
-from app.schemas.analysis import (
-    # Enums
-    AnalysisType,
-    RegionType,
-    CorrelationMethod,
-    
-    # Requests
-    CorrelationRequest,
-    AnalysisListRequest,
-    
-    # Responses
-    StatisticalResults,
-    SpatialCellData,
-    CorrelationResponse,
-    AnalysisSummary,
-    AnalysisListResponse,
-    CorrelationMapResponse,
-)
-
-
-# Export all schemas
+# Export all schemas - but don't import the others at module level to avoid circular imports
 __all__ = [
     # ===== COMMON =====
     # Geographic
@@ -230,6 +154,68 @@ __all__ = [
     "AnalysisListResponse",
     "CorrelationMapResponse",
 ]
+
+
+# Lazy imports to avoid circular dependencies
+def __getattr__(name):
+    """Lazy import schema modules to avoid circular dependencies."""
+    if name in {
+        # Fire schemas
+        "FireQueryRequest", "FireAggregationRequest", "FireDetectionResponse",
+        "FireListResponse", "FireAggregationCell", "FireAggregationResponse",
+        "FireStatisticsResponse", "FireGeoJSONResponse"
+    }:
+        from app.schemas.fires import (
+            FireQueryRequest, FireAggregationRequest, FireDetectionResponse,
+            FireListResponse, FireAggregationCell, FireAggregationResponse,
+            FireStatisticsResponse, FireGeoJSONResponse
+        )
+        return locals()[name]
+    
+    elif name in {
+        # Forest schemas
+        "ForestStatsRequest", "ForestTrendRequest", "ForestTileRequest",
+        "YearlyForestLoss", "ForestStatsResponse", "ForestTrendResponse",
+        "TileLayerConfig", "ForestTileResponse", "ForestHealthCheckResponse",
+        "AvailableCountriesResponse", "DeforestationTrend", "TrendSeverity"
+    }:
+        from app.schemas.forest import (
+            ForestStatsRequest, ForestTrendRequest, ForestTileRequest,
+            YearlyForestLoss, ForestStatsResponse, ForestTrendResponse,
+            TileLayerConfig, ForestTileResponse, ForestHealthCheckResponse,
+            AvailableCountriesResponse, DeforestationTrend, TrendSeverity
+        )
+        return locals()[name]
+    
+    elif name in {
+        # Climate schemas
+        "ClimateQueryRequest", "ClimateCountrySummaryRequest", "FireRiskAssessmentRequest",
+        "DailyClimateData", "ClimateTimeSeriesResponse", "ClimateStatistics",
+        "ClimateCountrySummaryResponse", "FireRiskAssessmentResponse", "ClimateHealthCheckResponse",
+        "FireRiskLevel"
+    }:
+        from app.schemas.climate import (
+            ClimateQueryRequest, ClimateCountrySummaryRequest, FireRiskAssessmentRequest,
+            DailyClimateData, ClimateTimeSeriesResponse, ClimateStatistics,
+            ClimateCountrySummaryResponse, FireRiskAssessmentResponse, ClimateHealthCheckResponse,
+            FireRiskLevel
+        )
+        return locals()[name]
+    
+    elif name in {
+        # Analysis schemas
+        "AnalysisType", "RegionType", "CorrelationMethod", "CorrelationRequest",
+        "AnalysisListRequest", "StatisticalResults", "SpatialCellData", "CorrelationResponse",
+        "AnalysisSummary", "AnalysisListResponse", "CorrelationMapResponse"
+    }:
+        from app.schemas.analysis import (
+            AnalysisType, RegionType, CorrelationMethod, CorrelationRequest,
+            AnalysisListRequest, StatisticalResults, SpatialCellData, CorrelationResponse,
+            AnalysisSummary, AnalysisListResponse, CorrelationMapResponse
+        )
+        return locals()[name]
+    
+    raise AttributeError(f"module 'app.schemas' has no attribute '{name}'")
 
 
 # Example usage documentation
