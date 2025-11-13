@@ -187,13 +187,8 @@ class ForestMonitor:
             return None
     
     def get_country_forest_stats(self, country_iso: str) -> Optional[Dict]:
-        """
-        Get comprehensive forest statistics for a country
+        """Get comprehensive forest statistics for a country"""
         
-        Returns:
-            Dict with country info, geostore, and tree cover loss data
-        """
-        # Get geostore for country info
         geostore_data = self.get_country_geostore(country_iso)
         if not geostore_data:
             logger.error(f"Failed to get geostore for {country_iso}")
@@ -205,7 +200,6 @@ class ForestMonitor:
         
         logger.info(f"Processing {country_name}")
         
-        # Get forest loss statistics
         forest_stats = self.get_yearly_tree_loss(country_iso)
         
         if not forest_stats:
@@ -219,11 +213,11 @@ class ForestMonitor:
                 "last_updated": datetime.now().isoformat()
             }
         
-        # Calculate statistics
         yearly_data = forest_stats.get("yearly_data", [])
         
         if yearly_data:
-            total_loss = sum(item.get("loss_ha", 0) for item in yearly_data)
+            # FIX: Convert string values to float
+            total_loss = sum(float(item.get("loss_ha", 0)) for item in yearly_data)
             recent_loss = yearly_data[-1]
             
             return {
@@ -233,7 +227,7 @@ class ForestMonitor:
                 "tree_cover_loss": {
                     "total_loss_ha": total_loss,
                     "recent_year": int(recent_loss.get("year", 0)),
-                    "recent_loss_ha": recent_loss.get("loss_ha", 0),
+                    "recent_loss_ha": float(recent_loss.get("loss_ha", 0)),
                     "yearly_data": yearly_data,
                     "years_available": len(yearly_data),
                     "data_range": f"{int(yearly_data[0]['year'])}-{int(yearly_data[-1]['year'])}"
@@ -249,14 +243,9 @@ class ForestMonitor:
                 "message": "No yearly data available",
                 "last_updated": datetime.now().isoformat()
             }
-    
     def analyze_deforestation_trend(self, country_iso: str) -> Optional[Dict]:
-        """
-        Analyze deforestation trends over time
+        """Analyze deforestation trends over time"""
         
-        Returns:
-            Dict with trend analysis (INCREASING, DECREASING, STABLE)
-        """
         stats = self.get_country_forest_stats(country_iso)
         if not stats or not stats.get("tree_cover_loss"):
             return {
@@ -274,19 +263,16 @@ class ForestMonitor:
                 "message": "Need at least 2 years for trend analysis"
             }
         
-        # Analyze recent years (last 5 years)
+        # FIX: Convert to float
         recent_data = sorted(yearly_data, key=lambda x: x["year"], reverse=True)[:5]
-        recent_losses = [item.get("loss_ha", 0) for item in recent_data]
+        recent_losses = [float(item.get("loss_ha", 0)) for item in recent_data]
         
-        # Compare with first 5 years
         early_data = sorted(yearly_data, key=lambda x: x["year"])[:5]
-        early_losses = [item.get("loss_ha", 0) for item in early_data]
+        early_losses = [float(item.get("loss_ha", 0)) for item in early_data]
         
-        # Calculate averages
-        recent_avg = sum(recent_losses) / len(recent_losses)
-        early_avg = sum(early_losses) / len(early_losses)
+        recent_avg = sum(recent_losses) / len(recent_losses) if recent_losses else 0
+        early_avg = sum(early_losses) / len(early_losses) if early_losses else 0
         
-        # Determine trend
         if early_avg > 0:
             change_pct = ((recent_avg - early_avg) / early_avg) * 100
             

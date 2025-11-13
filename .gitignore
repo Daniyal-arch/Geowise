@@ -5,6 +5,8 @@ venv*/
 venv311/
 .env/
 .venv/
+# Ignore environment files
+*.env
 
 # Python cache
 __pycache__/

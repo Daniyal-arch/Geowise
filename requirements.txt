@@ -56,3 +56,5 @@ pytest==7.4.3
 pytest-asyncio==0.21.1
 black==23.11.0
 country-bounding-boxes==1.0.3
+groq sentence-transformers 
+chromadb

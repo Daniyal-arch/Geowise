@@ -115,3 +115,5 @@ async def init_db() -> None:
 async def close_db() -> None:
     """Close database connection during app shutdown."""
     await database_manager.disconnect()
+# Alias for route compatibility
+get_async_session = get_db
