@@ -16,9 +16,16 @@ RESOLUTION NOTE:
 - Native resolution: ~25km grid (coarsest of all datasets)
 - This becomes the ANALYSIS resolution for correlations
 - Fire/Forest data must be aggregated UP to 25km for valid statistics
+
+ENHANCEMENTS:
+- Added ClimateService class for monthly aggregations
+- Supports full year data retrieval
+- Monthly aggregation using pandas
+- Real statistical calculations for correlations
 """
 
 import requests
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple
 import logging
@@ -28,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 class ClimateMonitor:
     """
-    Open-Meteo Climate Data Integration
+    Open-Meteo Climate Data Integration (Legacy class - maintained for backwards compatibility)
     
     Provides access to:
     1. Historical daily weather data (temperature, precipitation, wind)
@@ -428,3 +435,138 @@ class ClimateMonitor:
                 "api_accessible": False,
                 "timestamp": datetime.now().isoformat()
             }
+
+
+class ClimateService:
+    """
+    Enhanced Climate Service for Monthly Aggregations
+    
+    WHY NEW CLASS:
+    - Supports monthly aggregation for correlation analysis
+    - Fetches full year of data efficiently
+    - Uses pandas for proper statistical aggregation
+    - Designed specifically for fire-climate correlation studies
+    
+    USE CASES:
+    - Historical correlation analysis (fires vs climate by month)
+    - Seasonal pattern identification
+    - Multi-year climate trend analysis
+    """
+    
+    def __init__(self):
+        """Initialize Climate Service with Open-Meteo API"""
+        self.base_url = "https://archive-api.open-meteo.com/v1/archive"
+        
+        self.daily_variables = [
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "precipitation_sum",
+            "windspeed_10m_max",
+            "relative_humidity_2m_mean",
+        ]
+        
+        logger.info("ClimateService initialized for monthly aggregations")
+    
+    def get_monthly_climate(self, 
+                           latitude: float,
+                           longitude: float,
+                           year: int) -> Optional[Dict]:
+        """
+        Get monthly aggregated climate data for entire year
+        
+        WHY MONTHLY AGGREGATION:
+        - Fire data is aggregated monthly in database
+        - Climate data needs matching temporal resolution
+        - Monthly averages smooth daily noise
+        - Perfect for correlation analysis
+        
+        AGGREGATION LOGIC:
+        - Temperature: Monthly average of daily max/min
+        - Precipitation: Monthly total (sum of daily)
+        - Wind speed: Monthly average of daily max
+        - Humidity: Monthly average
+        
+        Args:
+            latitude: Latitude (-90 to 90)
+            longitude: Longitude (-180 to 180)
+            year: Year to fetch (e.g., 2020)
+        
+        Returns:
+            Dict with monthly aggregated data
+        """
+        try:
+            # Build date range for full year
+            start_date = f"{year}-01-01"
+            end_date = f"{year}-12-31"
+            
+            logger.info(f"Fetching full year climate data: {year}")
+            
+            # Build request
+            params = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "start_date": start_date,
+                "end_date": end_date,
+                "daily": ",".join(self.daily_variables),
+                "timezone": "UTC"
+            }
+            
+            response = requests.get(
+                self.base_url,
+                params=params,
+                timeout=60  # Longer timeout for full year
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"API error: {response.status_code}")
+                return None
+            
+            data = response.json()
+            
+            if "daily" not in data:
+                logger.error("No daily data in response")
+                return None
+            
+            # Convert to pandas DataFrame for easy aggregation
+            df = pd.DataFrame(data["daily"])
+            df["time"] = pd.to_datetime(df["time"])
+            df["month"] = df["time"].dt.month
+            
+            # Aggregate by month
+            monthly_agg = df.groupby("month").agg({
+                "temperature_2m_max": "mean",
+                "temperature_2m_min": "mean",
+                "precipitation_sum": "sum",  # Total monthly precipitation
+                "windspeed_10m_max": "mean",
+                "relative_humidity_2m_mean": "mean"
+            }).reset_index()
+            
+            # Convert to list of dicts
+            monthly_data = []
+            for _, row in monthly_agg.iterrows():
+                monthly_data.append({
+                    "month": int(row["month"]),
+                    "avg_temp_max": round(float(row["temperature_2m_max"]), 2),
+                    "avg_temp_min": round(float(row["temperature_2m_min"]), 2),
+                    "total_precipitation": round(float(row["precipitation_sum"]), 2),
+                    "avg_windspeed": round(float(row["windspeed_10m_max"]), 2),
+                    "avg_humidity": round(float(row["relative_humidity_2m_mean"]), 2)
+                })
+            
+            logger.info(f"✅ Aggregated {len(monthly_data)} months of climate data")
+            
+            return {
+                "year": year,
+                "location": {
+                    "latitude": latitude,
+                    "longitude": longitude
+                },
+                "monthly_data": monthly_data,
+                "data_source": "open_meteo_era5"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching monthly climate data: {e}")
+            import traceback
+            traceback.print_exc()
+            return None

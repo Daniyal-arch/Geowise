@@ -272,7 +272,8 @@ class NASAFIRMSService:
             country_iso = country_iso.upper()
             
             # Get country bounding box from library
-            country_data = country_subunits_by_iso_code(country_iso)
+            country_data = list(country_subunits_by_iso_code(country_iso))
+
             
             if not country_data:
                 raise DataValidationError(

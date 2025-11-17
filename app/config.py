@@ -3,17 +3,18 @@ GEOWISE Configuration Settings
 Centralized settings management using Pydantic with environment variable support.
 """
 from typing import Optional, List
-from pydantic import Field, PostgresDsn, validator
+from pydantic import Field, validator
 from pydantic_settings import BaseSettings
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Force load .env file
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(env_path)
 
 
 class Settings(BaseSettings):
-    """
-    GEOWISE Application Settings
-    
-    Loads from environment variables with .env file fallback.
-    Priority: Environment variables > .env file > default values
-    """
+    """GEOWISE Application Settings"""
     
     # Application
     APP_NAME: str = "GEOWISE API"
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
     # API
     API_V1_STR: str = "/api/v1"
     BACKEND_CORS_ORIGINS: List[str] = Field(
-        default=["http://localhost:3000", "http://127.0.0.1:3000"],  # React frontend
+        default=["http://localhost:3000", "http://127.0.0.1:3000"],
         description="Allowed CORS origins"
     )
     
@@ -50,6 +51,10 @@ class Settings(BaseSettings):
         description="NASA FIRMS API base URL"
     )
     
+    GFW_API_KEY: Optional[str] = Field(
+        default="8e5b3b69-fa31-4eef-af79-eec9674c7014",
+        description="Global Forest Watch API key"
+    )
     GFW_TILES_BASE_URL: str = Field(
         default="https://tiles.globalforestwatch.org",
         description="Global Forest Watch tiles base URL"
@@ -71,23 +76,23 @@ class Settings(BaseSettings):
         description="Groq API key for LLM inference"
     )
     GROQ_MODEL: str = Field(
-        default="llama3-70b-8192",
+        default="llama-3.3-70b-versatile",
         description="Groq model to use for inference"
     )
     
     # H3 Spatial Configuration
     H3_DISPLAY_RESOLUTION: int = Field(
-        default=9,  # ~174m cells for visualization
+        default=9,
         description="H3 resolution for display tiles (1km grid)"
     )
     H3_ANALYSIS_RESOLUTION: int = Field(
-        default=5,  # ~20km cells for analysis
+        default=5,
         description="H3 resolution for statistical analysis (25km grid)"
     )
     
     # Cache Settings
     CACHE_TTL: int = Field(
-        default=3600,  # 1 hour
+        default=3600,
         description="Default cache TTL in seconds"
     )
     
@@ -105,6 +110,9 @@ class Settings(BaseSettings):
     def assemble_cors_origins(cls, v):
         """Parse CORS origins from string or list."""
         if isinstance(v, str):
+            if v.startswith('['):
+                import json
+                return json.loads(v)
             return [origin.strip() for origin in v.split(",")]
         return v
     
@@ -125,12 +133,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
-        extra = "ignore"  # Ignore extra environment variables
+        extra = "ignore"
 
 
 # Global settings instance
 settings = Settings()
-
-# Example usage:
-# from app.config import settings
-# database_url = settings.DATABASE_URL

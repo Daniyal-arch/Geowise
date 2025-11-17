@@ -81,16 +81,14 @@ async def natural_language_query(request: NLQueryRequest):
             )
         
         # Build response
+       # Build response
         response_data = {
             "status": "success",
             "query": request.query,
             "intent": result.get("intent"),
-            "report": result.get("report")
+            "report": result.get("report"),
+            "data": result.get("data")  # ✅ Always include data
         }
-        
-        # Include raw data if requested
-        if request.include_raw_data:
-            response_data["data"] = result.get("data")
         
         logger.info(f"Query processed successfully: {result.get('intent')}")
         return response_data

@@ -1,6 +1,4 @@
-"""
-NASA FIRMS Fire Data Model - SQLite Compatible
-"""
+"""NASA FIRMS Fire Data Model - SQLite Compatible"""
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Index, Text
 from sqlalchemy.sql import func
@@ -11,18 +9,18 @@ from datetime import datetime
 
 
 class FireDetection(Base):
-    """
-    NASA FIRMS fire detection record with multi-resolution H3 indexing.
-    """
+    """NASA FIRMS fire detection record with multi-resolution H3 indexing."""
     __tablename__ = "fire_detections"
 
-    # Primary key - SQLite doesn't have native UUID, so use String
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), 
                 index=True, comment="Unique fire detection identifier")
     
-    # Spatial location - SQLite doesn't have PostGIS, store as separate fields
+    # Spatial location
     latitude = Column(Float, nullable=False, comment="Latitude in decimal degrees")
     longitude = Column(Float, nullable=False, comment="Longitude in decimal degrees")
+    
+    # Country identifier (NEW - for historical data organization)
+    country = Column(String(3), nullable=True, index=True, comment="ISO 3166-1 alpha-3 country code")
     
     # Multi-resolution H3 indexing
     h3_index_12 = Column(String(15), nullable=False, index=True)
@@ -55,36 +53,33 @@ class FireDetection(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), 
                        onupdate=func.now())
     
-    # Raw data for debugging
     raw_data = Column(Text)
 
-    # Indexes - SQLite compatible
     __table_args__ = (
         Index('idx_fires_h3_9_date', 'h3_index_9', 'acq_date'),
         Index('idx_fires_h3_5_date', 'h3_index_5', 'acq_date'),
         Index('idx_fires_frp_date', 'frp', 'acq_date'),
         Index('idx_fires_location', 'latitude', 'longitude'),
+        Index('idx_fires_country_year', 'country', 'acq_date'),  # NEW - for historical queries
     )
 
     def __init__(self, latitude: float, longitude: float, **kwargs):
         self.latitude = latitude
         self.longitude = longitude
         
-        # Use correct H3 function based on version
+        # Generate H3 indexes
         if hasattr(h3, 'latlng_to_cell'):
-            # H3 v4+
             self.h3_index_12 = h3.latlng_to_cell(latitude, longitude, 12)
             self.h3_index_9 = h3.latlng_to_cell(latitude, longitude, 9)
             self.h3_index_6 = h3.latlng_to_cell(latitude, longitude, 6)
             self.h3_index_5 = h3.latlng_to_cell(latitude, longitude, 5)
         else:
-            # H3 v3
             self.h3_index_12 = h3.geo_to_h3(latitude, longitude, 12)
             self.h3_index_9 = h3.geo_to_h3(latitude, longitude, 9)
             self.h3_index_6 = h3.geo_to_h3(latitude, longitude, 6)
             self.h3_index_5 = h3.geo_to_h3(latitude, longitude, 5)
         
-        # Field mapping
+        # Field mapping for NASA CSV compatibility
         field_mapping = {
             'bright_ti4': 'brightness',
         }
@@ -105,10 +100,16 @@ class FireDetection(Base):
             if hasattr(self, model_field):
                 setattr(self, model_field, value)
 
+    @property
+    def year(self) -> int:
+        """Extract year from acquisition date."""
+        return self.acq_date.year if self.acq_date else None
+
     def __repr__(self):
-        return f"<FireDetection(id={self.id}, lat={self.latitude}, lon={self.longitude}, frp={self.frp})>"
+        return f"<FireDetection(id={self.id}, country={self.country}, lat={self.latitude}, lon={self.longitude}, date={self.acq_date})>"
 
     def to_geojson(self) -> dict:
+        """Convert to GeoJSON feature."""
         return {
             "type": "Feature",
             "geometry": {
@@ -117,6 +118,7 @@ class FireDetection(Base):
             },
             "properties": {
                 "id": str(self.id),
+                "country": self.country,
                 "brightness": self.brightness,
                 "frp": self.frp,
                 "confidence": self.confidence,
@@ -130,6 +132,7 @@ class FireDetection(Base):
     
     @classmethod
     def from_nasa_csv_row(cls, row: dict) -> 'FireDetection':
+        """Create FireDetection from NASA CSV row."""
         latitude = float(row['latitude'])
         longitude = float(row['longitude'])
         fire_data = row.copy()
