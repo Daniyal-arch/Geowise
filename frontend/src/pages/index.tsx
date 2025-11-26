@@ -1,0 +1,808 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { getCountryData, detectCountryFromQuery, getCountryName } from '@/utils/countryCoordinates';
+
+// GEE imports
+import { getHansenForestTiles } from '@/services/geeService';
+import { addHansenLayers, removeHansenLayers, updateLayerVisibility } from '@/services/datasets/hansenForest';
+import type { LayerVisibility } from '@/types/gee';
+
+export default function Dashboard() {
+  const mapContainer = useRef<HTMLDivElement>(null);
+  const map = useRef<maplibregl.Map | null>(null);
+  const [mapLoaded, setMapLoaded] = useState(false);
+
+  const [currentCountry, setCurrentCountry] = useState<string>('BRA');
+  const [chatMessages, setChatMessages] = useState<{role: 'user' | 'assistant', content: string}[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isLoadingQuery, setIsLoadingQuery] = useState(false);
+  const [isChatExpanded, setIsChatExpanded] = useState(false);
+  const [hasQueried, setHasQueried] = useState(false);
+
+  const [availableLayers, setAvailableLayers] = useState<string[]>([]);
+  
+  const [visibleLayers, setVisibleLayers] = useState<LayerVisibility>({
+    baseline: false,
+    loss: false,
+    gain: false
+  });
+
+  const [forestStats, setForestStats] = useState<{
+    totalLoss: number;
+    recentYear: number;
+    recentLoss: number;
+    trend: string;
+    severity: string;
+    changePercent: number;
+    peakYear: number;
+    peakLoss: number;
+    lowestYear: number;
+    lowestLoss: number;
+    yearlyData: Array<{year: number, loss: number}>;
+    recentAvg: number;
+    earlyAvg: number;
+    yearsAvailable: number;
+    dataRange: string;
+    dataDescription: string;
+  } | null>(null);
+
+  const [driverBreakdown, setDriverBreakdown] = useState<Array<{
+    driver_category: string;
+    loss_ha: number;
+    percentage: number;
+    pixel_count: number;
+  }> | null>(null);
+
+  // 🟢 FIXED: Single dark basemap only
+  const basemapStyle = {
+    version: 8,
+    sources: {
+      'carto-dark': {
+        type: 'raster',
+        tiles: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        attribution: '©OpenStreetMap, ©CartoDB'
+      }
+    },
+    layers: [{
+      id: 'dark-layer',
+      type: 'raster',
+      source: 'carto-dark',
+      minzoom: 0,
+      maxzoom: 20
+    }]
+  };
+
+  useEffect(() => {
+    if (!mapContainer.current || map.current) return;
+
+    try {
+      const initMap = new maplibregl.Map({
+        container: mapContainer.current,
+        style: basemapStyle as any,
+        center: [-51.93, -14.24],
+        zoom: 3,
+        attributionControl: true,
+        pixelRatio: window.devicePixelRatio || 2,
+      });
+
+      initMap.addControl(new maplibregl.NavigationControl(), 'top-right');
+      initMap.addControl(new maplibregl.ScaleControl(), 'bottom-left');
+
+      initMap.on('load', () => {
+        setMapLoaded(true);
+      });
+
+      map.current = initMap;
+    } catch (error) {
+      console.error('[Map] Error:', error);
+      setMapLoaded(true);
+    }
+
+    return () => {
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!map.current || !mapLoaded) return;
+
+    Object.keys(visibleLayers).forEach((layer) => {
+      const layerKey = layer as keyof LayerVisibility;
+      updateLayerVisibility(map.current!, layerKey, visibleLayers[layerKey]);
+    });
+  }, [visibleLayers, mapLoaded]);
+
+  const flyToCountry = (countryCode: string) => {
+    if (!map.current || !mapLoaded) return;
+    
+    const countryData = getCountryData(countryCode);
+    if (!countryData) return;
+    
+    console.log('[Map] Flying to:', countryData.name);
+    
+    map.current.flyTo({
+      center: countryData.center,
+      zoom: countryData.zoom,
+      duration: 2500,
+      essential: true
+    });
+    
+    setCurrentCountry(countryCode);
+  };
+
+  const handleSendQuery = async () => {
+    if (!chatInput.trim() || isLoadingQuery) return;
+
+    const userMessage = chatInput.trim();
+    setChatInput('');
+    setIsChatExpanded(true);
+    setHasQueried(true);
+    
+    const detectedCountry = detectCountryFromQuery(userMessage);
+    
+    setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    setIsLoadingQuery(true);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/query/nl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: userMessage,
+          include_raw_data: true
+        })
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const apiResponse = await response.json();
+
+      const responseCountry = apiResponse.data?.country || detectedCountry || currentCountry;
+      
+      if (responseCountry) {
+        flyToCountry(responseCountry);
+      }
+
+      try {
+        if (map.current && mapLoaded) {
+          console.log('[Dashboard] Loading GEE tiles for:', responseCountry);
+          
+          const geeData = await getHansenForestTiles(responseCountry);
+          removeHansenLayers(map.current);
+          
+          const defaultVisibility: LayerVisibility = {
+            baseline: true,
+            loss: true,
+            gain: false
+          };
+          
+          const defaultOpacity = {
+            baseline: 0.6,
+            loss: 0.8,
+            gain: 0.3
+          };
+          
+          addHansenLayers(map.current, geeData, defaultVisibility, defaultOpacity);
+          
+          setAvailableLayers(['baseline', 'loss', 'gain']);
+          setVisibleLayers(defaultVisibility);
+          
+          console.log('[Dashboard] ✅ GEE tiles loaded successfully');
+        }
+      } catch (geeError) {
+        console.error('[Dashboard] GEE tile error:', geeError);
+      }
+
+      if (apiResponse.data) {
+        const data = apiResponse.data;
+        
+        const transformedYearlyData = (data.yearly_data || []).map((item: any) => ({
+          year: item.year,
+          loss: item.loss_ha || item.loss || 0
+        }));
+        
+        setForestStats({
+          totalLoss: data.summary?.total_loss_ha || 0,
+          recentYear: data.summary?.recent_year || 2024,
+          recentLoss: data.summary?.recent_loss_ha || 0,
+          trend: data.trend_analysis?.trend || 'UNKNOWN',
+          severity: data.trend_analysis?.severity || 'UNKNOWN',
+          changePercent: data.trend_analysis?.change_percent || 0,
+          peakYear: data.peak_loss_year?.year || 0,
+          peakLoss: data.peak_loss_year?.loss_ha || 0,
+          lowestYear: data.lowest_loss_year?.year || 0,
+          lowestLoss: data.lowest_loss_year?.loss_ha || 0,
+          yearlyData: transformedYearlyData,
+          recentAvg: data.trend_analysis?.recent_avg_loss_ha || 0,
+          earlyAvg: data.trend_analysis?.early_avg_loss_ha || 0,
+          yearsAvailable: data.summary?.years_available || 0,
+          dataRange: data.summary?.data_range || '',
+          dataDescription: data.data_description || ''
+        });
+
+        if (data.driver_breakdown && Array.isArray(data.driver_breakdown)) {
+          setDriverBreakdown(data.driver_breakdown);
+        } else {
+          setDriverBreakdown(null);
+        }
+      }
+
+      const aiResponse = apiResponse.report || apiResponse.answer || 'Done';
+      setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+
+    } catch (error) {
+      console.error('[Query] Error:', error);
+      setChatMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: `Error: ${error instanceof Error ? error.message : 'Failed'}`
+      }]);
+    } finally {
+      setIsLoadingQuery(false);
+    }
+  };
+
+  return (
+    <div className="relative h-screen w-screen bg-slate-950 text-gray-100 antialiased overflow-hidden">
+      
+      {/* 🟢 FIXED: Professional header with white logo */}
+      <header className="relative z-50 flex h-14 items-center justify-between px-6 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <div className="h-7 w-7 overflow-hidden">
+            <img src="https://api.designfast.io/v1/svg_generator/findone?desc=abstract_globe_icon&icon_set=tabler&color=FFFFFF" alt="Logo" className="h-full w-full"/>
+          </div>
+          <span className="text-xl font-semibold text-gray-100 tracking-tight">GeoWise AI</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="h-8 w-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-gray-300 font-medium text-xs cursor-pointer hover:bg-slate-700 transition-colors">
+            DA
+          </div>
+        </div>
+      </header>
+
+      <div className="relative z-40 flex h-[calc(100vh-3.5rem)]">
+        
+        {/* 🟢 FIXED: Professional left sidebar - no basemap selector */}
+        <aside className="w-56 bg-slate-900/95 backdrop-blur-sm border-r border-slate-800 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            
+            {hasQueried && availableLayers.length > 0 && (
+              <div>
+                <h3 className="text-[11px] font-semibold text-gray-400 mb-2.5 uppercase tracking-wider">
+                  Data Layers
+                </h3>
+                <div className="space-y-2">
+                  {/* 🟢 FIXED: Professional layer toggles - subtle, no glow */}
+                  {availableLayers.includes('baseline') && (
+                    <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border ${
+                      visibleLayers.baseline 
+                        ? 'bg-slate-800 border-slate-700' 
+                        : 'border-slate-800 hover:bg-slate-800/50 hover:border-slate-700'
+                    }`}>
+                      <input 
+                        type="checkbox" 
+                        checked={visibleLayers.baseline}
+                        onChange={(e) => setVisibleLayers({...visibleLayers, baseline: e.target.checked})}
+                        className="h-3.5 w-3.5 rounded accent-emerald-600 bg-slate-800 border-slate-700"
+                      />
+                      <div className="w-3.5 h-3.5 rounded-sm bg-gradient-to-br from-emerald-500 to-emerald-600"></div>
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-gray-200">Forest Density</div>
+                        <div className="text-[10px] text-gray-500">Baseline 2000</div>
+                      </div>
+                    </label>
+                  )}
+
+                  {availableLayers.includes('loss') && (
+                    <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border ${
+                      visibleLayers.loss 
+                        ? 'bg-slate-800 border-slate-700' 
+                        : 'border-slate-800 hover:bg-slate-800/50 hover:border-slate-700'
+                    }`}>
+                      <input 
+                        type="checkbox" 
+                        checked={visibleLayers.loss}
+                        onChange={(e) => setVisibleLayers({...visibleLayers, loss: e.target.checked})}
+                        className="h-3.5 w-3.5 rounded accent-red-600 bg-slate-800 border-slate-700"
+                      />
+                      <div className="w-3.5 h-3.5 rounded-sm bg-gradient-to-br from-orange-500 to-red-600"></div>
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-gray-200">Tree Cover Loss</div>
+                        <div className="text-[10px] text-gray-500">2001-2024</div>
+                      </div>
+                    </label>
+                  )}
+
+                  {availableLayers.includes('gain') && (
+                    <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border ${
+                      visibleLayers.gain 
+                        ? 'bg-slate-800 border-slate-700' 
+                        : 'border-slate-800 hover:bg-slate-800/50 hover:border-slate-700'
+                    }`}>
+                      <input 
+                        type="checkbox" 
+                        checked={visibleLayers.gain}
+                        onChange={(e) => setVisibleLayers({...visibleLayers, gain: e.target.checked})}
+                        className="h-3.5 w-3.5 rounded accent-blue-600 bg-slate-800 border-slate-700"
+                      />
+                      <div className="w-3.5 h-3.5 rounded-sm bg-gradient-to-br from-blue-500 to-blue-600"></div>
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-gray-200">Forest Gain</div>
+                        <div className="text-[10px] text-gray-500">2000-2012</div>
+                      </div>
+                    </label>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* Map container */}
+        <div className="flex-1 relative bg-slate-950">
+          <div 
+            ref={mapContainer} 
+            className="absolute inset-0 w-full h-full"
+          />
+          
+          {!mapLoaded && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/90">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500 mx-auto mb-3"></div>
+                <p className="text-sm text-gray-400">Loading map...</p>
+              </div>
+            </div>
+          )}
+
+          {/* Professional legend */}
+          {hasQueried && availableLayers.length > 0 && (
+            <div className="absolute top-4 left-4 bg-slate-900/95 backdrop-blur-sm rounded-lg shadow-lg border border-slate-800 p-3 max-w-xs z-10">
+              <h4 className="text-[11px] font-semibold text-gray-400 mb-2 uppercase tracking-wide">Legend</h4>
+              <div className="space-y-2">
+                {availableLayers.includes('baseline') && visibleLayers.baseline && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-2.5 rounded-sm bg-gradient-to-r from-emerald-500 to-emerald-600"></div>
+                    <span className="text-[10px] font-medium text-gray-300">Forest Density (2000)</span>
+                  </div>
+                )}
+                
+                {availableLayers.includes('loss') && visibleLayers.loss && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-2.5 rounded-sm bg-gradient-to-r from-orange-500 to-red-600"></div>
+                      <span className="text-[10px] font-medium text-gray-300">Tree Cover Loss</span>
+                    </div>
+                    <div className="flex justify-between text-[9px] text-gray-500 pl-6">
+                      <span>2001</span>
+                      <span>→</span>
+                      <span>2024</span>
+                    </div>
+                  </div>
+                )}
+
+                {availableLayers.includes('gain') && visibleLayers.gain && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-2.5 rounded-sm bg-blue-500"></div>
+                    <span className="text-[10px] font-medium text-gray-300">Forest Gain (2000-2012)</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 🟢 FIXED: Professional right sidebar - smaller text */}
+        {hasQueried && forestStats && forestStats.yearlyData && forestStats.yearlyData.length > 0 && (
+          <aside className="w-[360px] bg-slate-900/95 backdrop-blur-sm border-l border-slate-800 overflow-y-auto">
+            <div className="p-4 space-y-3.5">
+              
+              <div className="pb-2.5 border-b border-slate-800">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-100">{getCountryName(currentCountry)}</h2>
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Tree Cover Loss Analysis • {forestStats.dataRange}
+                    </p>
+                  </div>
+                  <span className="text-[10px] px-2 py-1 bg-emerald-950/50 text-emerald-400 rounded font-medium border border-emerald-900/50">GFW</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
+                <p className="text-xs text-gray-300 leading-relaxed">
+                  From <strong className="text-gray-100">{forestStats.yearlyData[0]?.year || 2001}</strong> to <strong className="text-gray-100">{forestStats.recentYear}</strong>,{' '}
+                  {getCountryName(currentCountry)} lost{' '}
+                  <strong className="text-red-400">{(forestStats.totalLoss / 1000000).toFixed(1)} Mha</strong> of tree cover.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
+                  <div className="text-[10px] text-gray-500 mb-1 uppercase font-semibold tracking-wide">Total Loss</div>
+                  <div className="text-2xl font-bold text-red-400">
+                    {(forestStats.totalLoss / 1000000).toFixed(1)} Mha
+                  </div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">{forestStats.dataRange}</div>
+                </div>
+                
+                <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
+                  <div className="text-[10px] text-gray-500 mb-1 uppercase font-semibold tracking-wide">{forestStats.recentYear} Loss</div>
+                  <div className="text-2xl font-bold text-orange-400">
+                    {(forestStats.recentLoss / 1000).toFixed(0)} kha
+                  </div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">recent year</div>
+                </div>
+              </div>
+
+              {/* DRIVERS DONUT - Smaller */}
+              {driverBreakdown && driverBreakdown.length > 0 && (
+                <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
+                  <div className="p-3 border-b border-slate-800">
+                    <h3 className="text-xs font-bold text-gray-100">DRIVERS OF DEFORESTATION</h3>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Causes of forest loss in {forestStats.recentYear}
+                    </p>
+                  </div>
+                  
+                  <div className="p-3">
+                    {(() => {
+                      const colors = [
+                        '#EF4444', '#F97316', '#F59E0B', '#10B981', 
+                        '#3B82F6', '#8B5CF6', '#EC4899', '#6B7280'
+                      ];
+                      
+                      let cumulativePercent = 0;
+                      
+                      return (
+                        <div className="space-y-3">
+                          <div className="relative w-40 h-40 mx-auto">
+                            <svg viewBox="0 0 100 100" className="transform -rotate-90">
+                              {driverBreakdown.map((driver, idx) => {
+                                const percent = driver.percentage;
+                                const startPercent = cumulativePercent;
+                                cumulativePercent += percent;
+                                
+                                const startAngle = (startPercent / 100) * 360;
+                                const endAngle = (cumulativePercent / 100) * 360;
+                                
+                                const x1 = 50 + 40 * Math.cos((Math.PI * startAngle) / 180);
+                                const y1 = 50 + 40 * Math.sin((Math.PI * startAngle) / 180);
+                                const x2 = 50 + 40 * Math.cos((Math.PI * endAngle) / 180);
+                                const y2 = 50 + 40 * Math.sin((Math.PI * endAngle) / 180);
+                                
+                                const largeArc = percent > 50 ? 1 : 0;
+                                
+                                return (
+                                  <path
+                                    key={idx}
+                                    d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`}
+                                    fill={colors[idx % colors.length]}
+                                    className="hover:opacity-80 transition-opacity cursor-pointer"
+                                  />
+                                );
+                              })}
+                              <circle cx="50" cy="50" r="25" fill="#0f172a" />
+                            </svg>
+                            <div className="absolute inset-0 flex flex-col items-center justify-center">
+                              <div className="text-xl font-bold text-gray-100">
+                                {driverBreakdown.reduce((sum, d) => sum + d.percentage, 0).toFixed(0)}%
+                              </div>
+                              <div className="text-[9px] text-gray-500">Total Loss</div>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-1.5">
+                            {driverBreakdown.map((driver, idx) => (
+                              <div key={idx} className="flex items-center justify-between text-[11px]">
+                                <div className="flex items-center gap-1.5 flex-1">
+                                  <div 
+                                    className="w-2.5 h-2.5 rounded-sm flex-shrink-0" 
+                                    style={{backgroundColor: colors[idx % colors.length]}}
+                                  ></div>
+                                  <span className="text-gray-300 truncate">
+                                    {driver.driver_category}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1.5 ml-2">
+                                  <span className="font-semibold text-gray-100">{driver.percentage.toFixed(1)}%</span>
+                                  <span className="text-gray-600 text-[10px]">
+                                    ({(driver.loss_ha / 1000).toFixed(1)}k ha)
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* HISTOGRAM - Smaller */}
+              <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
+                <div className="p-3 border-b border-slate-800">
+                  <h3 className="text-xs font-bold text-gray-100">RECENT YEARS (LAST 10)</h3>
+                </div>
+                
+                <div className="p-3">
+                  {(() => {
+                    const last10 = forestStats.yearlyData.slice(-10);
+                    const maxLoss = Math.max(...last10.map(d => d.loss));
+                    const minLoss = Math.min(...last10.map(d => d.loss));
+                    
+                    const getRelativeHeight = (value: number) => {
+                      if (maxLoss === minLoss) return 100;
+                      const normalized = (value - minLoss) / (maxLoss - minLoss);
+                      return 20 + (normalized * 80);
+                    };
+                    
+                    return (
+                      <>
+                        <div className="h-40 flex items-end justify-between gap-0.5 bg-slate-900/50 p-2 rounded relative">
+                          {last10.map((yearData, idx) => {
+                            const heightPercent = getRelativeHeight(yearData.loss);
+                            const heightPx = (heightPercent / 100) * 144;
+                            
+                            return (
+                              <div key={idx} className="flex-1 flex flex-col items-center justify-end group relative">
+                                <div 
+                                  className="w-full bg-gradient-to-t from-red-600 via-red-500 to-orange-400 hover:from-red-700 hover:via-red-600 hover:to-orange-500 transition-all cursor-pointer rounded-t"
+                                  style={{
+                                    height: `${heightPx}px`,
+                                    minHeight: '16px'
+                                  }}
+                                >
+                                  <div className="absolute -top-14 left-1/2 -translate-x-1/2 bg-slate-950 text-gray-100 text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 border border-slate-800">
+                                    <div className="font-semibold">{yearData.year}</div>
+                                    <div className="text-gray-400">{(yearData.loss / 1000).toFixed(1)} kha</div>
+                                  </div>
+                                </div>
+                                <span className="text-[9px] text-gray-500 mt-1">{yearData.year}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        
+                        <div className="flex justify-between mt-2 text-[9px] text-gray-600">
+                          <span>Min: {(minLoss / 1000).toFixed(0)}k ha</span>
+                          <span>Max: {(maxLoss / 1000).toFixed(0)}k ha</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* ALL YEARS - Smaller */}
+              <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
+                <div className="p-3 border-b border-slate-800">
+                  <h3 className="text-xs font-bold text-gray-100">TREE COVER LOSS - ALL YEARS</h3>
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Annual forest loss from {forestStats.yearlyData[0]?.year} to {forestStats.yearlyData[forestStats.yearlyData.length - 1]?.year}
+                  </p>
+                </div>
+                
+                <div className="p-3">
+                  {(() => {
+                    const allYears = forestStats.yearlyData;
+                    const maxLoss = Math.max(...allYears.map(d => d.loss));
+                    const minLoss = Math.min(...allYears.map(d => d.loss));
+                    
+                    const getRelativeHeight = (value: number) => {
+                      if (maxLoss === minLoss) return 100;
+                      const normalized = (value - minLoss) / (maxLoss - minLoss);
+                      return 15 + (normalized * 85);
+                    };
+                    
+                    return (
+                      <>
+                        <div className="flex items-start mb-2">
+                          <div className="w-12 flex flex-col justify-between h-52 text-[9px] text-gray-600">
+                            <span>{(maxLoss / 1000).toFixed(0)}k</span>
+                            <span>{((maxLoss + minLoss) / 2000).toFixed(0)}k</span>
+                            <span>{(minLoss / 1000).toFixed(0)}k</span>
+                          </div>
+                          
+                          <div className="flex-1 h-52 flex items-end justify-between gap-[1px] px-2 bg-slate-900/50 rounded">
+                            {allYears.map((yearData, idx) => {
+                              const heightPercent = getRelativeHeight(yearData.loss);
+                              const heightPx = (heightPercent / 100) * 200;
+                              
+                              return (
+                                <div key={idx} className="flex-1 flex flex-col items-center justify-end group relative">
+                                  <div 
+                                    className="w-full bg-gradient-to-t from-red-600 to-orange-400 hover:from-red-700 hover:to-orange-500 transition-colors cursor-pointer rounded-t"
+                                    style={{
+                                      height: `${heightPx}px`,
+                                      minHeight: '12px'
+                                    }}
+                                  >
+                                    <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-950 text-gray-100 text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 border border-slate-800">
+                                      <div className="font-semibold">{yearData.year}</div>
+                                      <div className="text-gray-400">{(yearData.loss / 1000).toFixed(1)} kha</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        
+                        <div className="flex justify-between mt-2 ml-12 text-[9px] text-gray-600">
+                          {allYears.map((d, idx) => (
+                            <span key={idx} className={idx % 3 !== 0 ? 'invisible' : ''}>'{d.year.toString().slice(-2)}</span>
+                          ))}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+                
+                <div className="mx-3 mb-3 p-2 bg-amber-950/20 border border-amber-900/30 rounded">
+                  <div className="flex gap-2">
+                    <svg className="h-3.5 w-3.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <p className="text-[10px] text-gray-400 leading-relaxed">
+                      Charts use relative scaling. Actual values on hover.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* TREND - Smaller */}
+              <div className="bg-slate-800/50 rounded-lg border border-slate-800 p-3">
+                <h3 className="text-xs font-bold text-gray-100 mb-2">TREND ANALYSIS</h3>
+                <div className="grid grid-cols-2 gap-3 text-[11px]">
+                  <div>
+                    <div className="text-gray-500 mb-0.5">Trend</div>
+                    <div className={`font-bold text-base ${
+                      forestStats.trend === 'INCREASING' ? 'text-red-400' : 
+                      forestStats.trend === 'DECREASING' ? 'text-emerald-400' : 'text-amber-400'
+                    }`}>
+                      {forestStats.trend}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500 mb-0.5">Severity</div>
+                    <div className="font-bold text-base text-gray-200">{forestStats.severity}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500 mb-0.5">Change Rate</div>
+                    <div className="font-bold text-base text-gray-200">{forestStats.changePercent.toFixed(1)}%</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500 mb-0.5">Period</div>
+                    <div className="font-bold text-base text-gray-200">{forestStats.yearsAvailable} years</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* PEAK/LOWEST - Smaller */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-red-950/20 rounded-lg p-3 border border-red-900/30">
+                  <div className="text-[10px] text-gray-500 mb-0.5 uppercase font-semibold">Peak Year</div>
+                  <div className="text-xl font-bold text-red-400">{forestStats.peakYear}</div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">{(forestStats.peakLoss / 1000).toFixed(0)} kha</div>
+                </div>
+                
+                <div className="bg-emerald-950/20 rounded-lg p-3 border border-emerald-900/30">
+                  <div className="text-[10px] text-gray-500 mb-0.5 uppercase font-semibold">Lowest Year</div>
+                  <div className="text-xl font-bold text-emerald-400">{forestStats.lowestYear}</div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">{(forestStats.lowestLoss / 1000).toFixed(0)} kha</div>
+                </div>
+              </div>
+
+              {/* DATA SOURCE - Smaller */}
+              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800 text-[11px] text-gray-500">
+                <div className="font-semibold text-gray-300 mb-1.5">Data Source</div>
+                <div className="space-y-0.5">
+                  <div><strong className="text-gray-400">Source:</strong> Global Forest Watch</div>
+                  <div><strong className="text-gray-400">Dataset:</strong> {forestStats.dataDescription || 'UMD Hansen et al.'}</div>
+                  <div><strong className="text-gray-400">Resolution:</strong> 30m (Landsat)</div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        )}
+      </div>
+
+      {/* 🟢 FIXED: Professional chat - no green, subtle colors */}
+      <div className={`absolute ${isChatExpanded ? 'bottom-0 left-1/2 -translate-x-1/2' : 'bottom-5 left-1/2 -translate-x-1/2'} z-50 w-full max-w-3xl px-4 transition-all duration-300`}>
+        <div className={`bg-slate-900/95 backdrop-blur-sm ${isChatExpanded ? 'rounded-t-xl' : 'rounded-xl'} shadow-2xl border border-slate-800 overflow-hidden`}>
+          
+          {isChatExpanded && chatMessages.length > 0 && (
+            <div className="max-h-80 overflow-y-auto p-4 space-y-2.5 border-b border-slate-800">
+              {chatMessages.map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-lg px-3.5 py-2 ${
+                    msg.role === 'user' 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-slate-800 text-gray-200 border border-slate-700'
+                  }`}>
+                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+              {isLoadingQuery && (
+                <div className="flex justify-start">
+                  <div className="bg-slate-800 rounded-lg px-3.5 py-2 border border-slate-700">
+                    <div className="flex items-center gap-2">
+                      <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-blue-500"></div>
+                      <span className="text-sm text-gray-400">Analyzing...</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="p-3.5">
+            <div className="flex items-center gap-2.5">
+              <div className="flex-shrink-0 h-9 w-9 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center">
+                <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1"/>
+                </svg>
+              </div>
+              
+              <input 
+                type="text" 
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSendQuery()}
+                onFocus={() => setIsChatExpanded(true)}
+                placeholder="Ask AI: 'Show deforestation in Brazil' or 'Forest loss in Indonesia'" 
+                className="flex-1 h-10 px-3.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                disabled={isLoadingQuery}
+              />
+              
+              {isChatExpanded && (
+                <button 
+                  onClick={() => setIsChatExpanded(false)}
+                  className="h-9 w-9 bg-slate-800 hover:bg-slate-700 rounded-lg flex items-center justify-center transition-colors border border-slate-700"
+                >
+                  <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </button>
+              )}
+              
+              <button 
+                onClick={handleSendQuery}
+                disabled={isLoadingQuery || !chatInput.trim()}
+                className="h-10 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium text-sm transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span>Send</span>
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                </svg>
+              </button>
+            </div>
+
+            {(!isChatExpanded || chatMessages.length === 0) && (
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                <button onClick={() => { setChatInput("Show deforestation in Brazil"); setIsChatExpanded(true); }} className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors border border-slate-700 text-gray-400">
+                  🇧🇷 Brazil
+                </button>
+                <button onClick={() => { setChatInput("Show deforestation in Indonesia"); setIsChatExpanded(true); }} className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors border border-slate-700 text-gray-400">
+                  🇮🇩 Indonesia
+                </button>
+                <button onClick={() => { setChatInput("Forest loss in Congo"); setIsChatExpanded(true); }} className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors border border-slate-700 text-gray-400">
+                  🇨🇩 Congo
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

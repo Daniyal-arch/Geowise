@@ -1,0 +1,22 @@
+{
+  "country": "BRA",
+  "country_name": "Brazil",
+  "data_summary": {
+    "total_fires": 3153927,
+    "date_range": {
+      "start": "2019-01-01 00:00:00.000000",
+      "end": "2020-12-31 00:00:00.000000"
+    },
+    "years_available": [
+      2019,
+      2020
+    ],
+    "avg_frp": 12.52,
+    "satellites": 1
+  },
+  "last_updated": "2025-11-18T11:36:51.472480",
+  "data_sources": [
+    "NASA FIRMS VIIRS"
+  ],
+  "resolution": "375m"
+}
