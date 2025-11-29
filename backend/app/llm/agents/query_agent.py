@@ -1,4 +1,4 @@
-"""Query Understanding Agent - UPDATED WITH FIRE-FOREST CORRELATION"""
+"""Query Understanding Agent - WITH DRIVER DETECTION"""
 
 import json
 import re
@@ -21,14 +21,16 @@ class QueryAgent:
     2. query_monthly - Monthly fire breakdown
     3. query_high_frp - High intensity fires
     4. analyze_correlation - Fire-climate correlation
-    5. analyze_fire_forest_correlation - Fire-deforestation correlation (NEW!)
+    5. analyze_fire_forest_correlation - Fire-deforestation correlation
     6. query_forest - Forest/deforestation only
-    7. generate_report - Comprehensive reports
+    7. query_drivers - Deforestation drivers (NEW!)
+    8. generate_report - Comprehensive reports
     
     FEATURES:
     - Hybrid LLM + rule-based intent detection
     - Prioritized keyword matching
     - Context-aware detection
+    - Driver query detection
     - Fallback year extraction
     """
     
@@ -108,10 +110,11 @@ class QueryAgent:
         DETECTION ORDER (Priority):
         1. Monthly queries (most specific)
         2. High FRP queries (most specific)
-        3. Fire-Forest correlation (fires + forests together) ← NEW!
-        4. Forest-only queries (only forests, no fires)
-        5. Fire-Climate correlation (fires + climate, no forests)
-        6. Trend analysis (fallback)
+        3. Driver queries (NEW! - causes, drivers, why) 🟢
+        4. Fire-Forest correlation (fires + forests together)
+        5. Forest-only queries (only forests, no fires)
+        6. Fire-Climate correlation (fires + climate, no forests)
+        7. Trend analysis (fallback)
         
         Args:
             user_query: Original user query
@@ -139,7 +142,28 @@ class QueryAgent:
             parsed["intent"] = "query_high_frp"
             return parsed
         
-        # Pattern 3: Fire-Forest correlation (NEW - CHECK BEFORE SEPARATING!)
+        # 🟢 Pattern 3: Driver queries (NEW!)
+        # Detects queries asking about causes/drivers/reasons for deforestation
+        driver_keywords = [
+            "cause", "causes", "driver", "drivers", "why", "reason", "reasons",
+            "what caused", "what's causing", "what is causing", "what causes",
+            "show drivers", "show causes", "show me drivers", "show me causes",
+            "deforestation cause", "deforestation driver", "forest loss cause",
+            "tree loss cause", "agriculture", "logging", "farming", "cattle",
+            "palm oil", "soy", "urban", "fire driver"
+        ]
+        
+        # Check if query is asking about drivers/causes
+        has_driver_intent = any(keyword in query_lower for keyword in driver_keywords)
+        
+        # If driver-related keywords detected → query_drivers
+        if has_driver_intent:
+            logger.info("Rule-based detection: Driver query (causes/drivers)")
+            parsed["intent"] = "query_drivers"
+            parsed["show_drivers"] = True  # 🟢 Flag for frontend
+            return parsed
+        
+        # Pattern 4: Fire-Forest correlation
         # Detects queries asking about BOTH fires AND forests together
         fire_keywords = ["fire", "fires", "burning", "burnt"]
         forest_keywords = ["forest", "deforestation", "tree loss", "tree cover", "forest loss"]
@@ -153,13 +177,13 @@ class QueryAgent:
             parsed["intent"] = "analyze_fire_forest_correlation"
             return parsed
         
-        # Pattern 4: Forest/Deforestation queries (ONLY forest, no fires)
+        # Pattern 5: Forest/Deforestation queries (ONLY forest, no fires)
         if has_forest and not has_fire:
             logger.info("Rule-based detection: Forest query (forest only)")
             parsed["intent"] = "query_forest"
             return parsed
         
-        # Pattern 5: Fire-Climate correlation (fires + climate, NOT forests)
+        # Pattern 6: Fire-Climate correlation (fires + climate, NOT forests)
         correlation_keywords = ["correlation", "correlate", "relationship", "impact of", "affect", "influence"]
         climate_keywords = ["climate", "temperature", "weather", "precipitation", "wind"]
         
@@ -168,15 +192,15 @@ class QueryAgent:
         
         # Correlation if: (correlation keywords) OR (climate + fire keywords)
         if has_correlation_intent or (has_climate_context and has_fire):
-            if parsed.get("intent") not in ["query_monthly", "query_high_frp", "query_forest", "analyze_fire_forest_correlation"]:
+            if parsed.get("intent") not in ["query_monthly", "query_high_frp", "query_drivers", "query_forest", "analyze_fire_forest_correlation"]:
                 logger.info("Rule-based detection: Fire-Climate correlation")
                 parsed["intent"] = "analyze_correlation"
                 return parsed
         
-        # Pattern 6: Trend analysis queries (FALLBACK)
+        # Pattern 7: Trend analysis queries (FALLBACK)
         trend_keywords = ["trend", "over time", "change over", "historical"]
         if any(keyword in query_lower for keyword in trend_keywords):
-            if parsed.get("intent") not in ["query_monthly", "query_high_frp", "query_forest", "analyze_correlation", "analyze_fire_forest_correlation"]:
+            if parsed.get("intent") not in ["query_monthly", "query_high_frp", "query_drivers", "query_forest", "analyze_correlation", "analyze_fire_forest_correlation"]:
                 logger.info("Rule-based detection: Trend analysis")
                 parsed["intent"] = "generate_report"
                 return parsed

@@ -65,8 +65,8 @@ class LLMOrchestrator:
         
         intent = parsed.get("intent")
         parameters = parsed.get("parameters", {})
-        
-        logger.info(f"Intent: {intent}, Parameters: {parameters}")
+        show_drivers = parsed.get("show_drivers", False)  #  NEW
+        logger.info(f"Intent: {intent}, Parameters: {parameters}, Show Drivers: {show_drivers}")
         
         if intent == "query_fires":
             result = await self._query_fires(parameters)
@@ -100,17 +100,25 @@ class LLMOrchestrator:
         elif intent == "query_forest":
             country = parameters.get("country_iso")
             result = await self._query_forest_loss(country)
-
+        elif intent == "query_drivers":  # Driver visualization query
+            country = parameters.get("country_iso")
+            result = await self._query_forest_drivers(country)
+            # show_drivers is already set inside data by _query_forest_drivers
         elif intent == "generate_report":
             result = await self._generate_report(parameters)
 
         else:
             result = {"status": "error", "message": f"Unknown intent: {intent}"}
         
+        if show_drivers and result.get("status") != "error":
+            # Ensure show_drivers is inside the data object
+            if "data" in result:
+                result["data"]["show_drivers"] = True
+
         if result.get("status") != "error":
             report = await self.report_agent.generate_report(result)
             result["report"] = report
-        
+
         return result
     
     async def _query_fires(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -679,7 +687,11 @@ class LLMOrchestrator:
                     "message": f"No forest data available for {country_iso}"
                 }
             
-            trend_analysis = self.forest_monitor.analyze_deforestation_trend(country_iso)
+            # 🟢 SOLUTION 1: Pass pre-fetched stats to avoid duplicate API call
+            trend_analysis = self.forest_monitor.analyze_deforestation_trend(
+                country_iso,
+                forest_stats=forest_stats  # ✅ Pass the already-fetched data
+            )
             
             tree_loss = forest_stats["tree_cover_loss"]
             yearly_data = tree_loss["yearly_data"]
@@ -701,7 +713,32 @@ class LLMOrchestrator:
             logger.info(f"✅ Retrieved {len(formatted_yearly)} years of forest data")
             
             # ========================================
-            # NEW: Fetch driver breakdown (EXACT COPY from fire-forest correlation)
+            # Get driver tile URL for visualization
+            # ========================================
+            import httpx
+            
+            tile_url = None
+            try:
+                # CORRECT PATH: /api/v1/tiles/ (not /api/v1/gee/tiles/)
+                api_url = f"http://localhost:8000/api/v1/tiles/{country_iso}/drivers"
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(api_url, timeout=30.0)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    tile_url = data.get("tile_url")
+                    if tile_url:
+                        logger.info(f"✅ Got driver tile URL: {tile_url[:50]}...")
+                    else:
+                        logger.warning(f"No tile_url in response")
+                else:
+                    logger.warning(f"Tiles API error: {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Could not get tile URL: {e}")
+            
+            # ========================================
+            # NEW: Fetch driver breakdown for stats
             # ========================================
             driver_data = None
             try:
@@ -709,7 +746,7 @@ class LLMOrchestrator:
             except Exception as e:
                 logger.warning(f"Could not get driver data: {e}")
             
-            # Extract drivers if available (EXACT COPY from line 910)
+            # Extract drivers if available
             driver_breakdown = driver_data['yearly_data'][0]['drivers'] if driver_data and driver_data.get('yearly_data') else None
             
             if driver_breakdown:
@@ -743,6 +780,8 @@ class LLMOrchestrator:
                     "peak_loss_year": max(formatted_yearly, key=lambda x: x["loss_ha"]),
                     "lowest_loss_year": min(formatted_yearly, key=lambda x: x["loss_ha"]),
                     "driver_breakdown": driver_breakdown,
+                    "tile_url": tile_url,  # ✅ ADD TILE URL
+                    "show_drivers": tile_url is not None,  # ✅ ADD SHOW_DRIVERS FLAG
                     "data_source": "global_forest_watch",
                     "dataset": "GADM TCL Change (UMD Hansen)",
                     "data_description": "Tree cover loss from all causes (fires, logging, agriculture, natural events)"
@@ -1051,7 +1090,11 @@ class LLMOrchestrator:
                 fires = await self.nasa_service.get_fires_by_country(country_iso, days=7)
             
             forest_stats = self.forest_monitor.get_country_forest_stats(country_iso)
-            forest_trend = self.forest_monitor.analyze_deforestation_trend(country_iso)
+            # 🟢 SOLUTION 1: Pass pre-fetched stats to avoid duplicate API call
+            forest_trend = self.forest_monitor.analyze_deforestation_trend(
+                country_iso,
+                forest_stats=forest_stats  # ✅ Pass pre-fetched stats
+            )
             
             return {
                 "status": "success",
@@ -1100,5 +1143,72 @@ class LLMOrchestrator:
         
         return response.choices[0].message.content
 
+    async def _query_forest_drivers(self, country_iso: str) -> Dict[str, Any]:
+        """
+        Query forest loss drivers - TILE VISUALIZATION ONLY
+        
+        This method is for the "show drivers" / "add drivers layer" queries.
+        It calls the tiles API endpoint to get the driver tile URL.
+        It does NOT fetch forest stats from GFW API.
+        """
+        if not country_iso:
+            return {"status": "error", "message": "Country code required"}
+        
+        try:
+            logger.info(f"Fetching driver tile URL for {country_iso}")
+            
+            # Call the tiles API endpoint for drivers
+            import httpx
+            
+            # CORRECT PATH: /api/v1/tiles/ (not /api/v1/gee/tiles/)
+            api_url = f"http://localhost:8000/api/v1/tiles/{country_iso}/drivers"
+            
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(api_url, timeout=30.0)
+                    
+                if response.status_code == 200:
+                    data = response.json()
+                    tile_url = data.get("tile_url")
+                    
+                    if tile_url:
+                        logger.info(f"✅ Got driver tile URL for {country_iso}")
+                        
+                        return {
+                            "status": "success",
+                            "intent": "query_drivers",
+                            "data": {
+                                "country": country_iso,
+                                "tile_url": tile_url,
+                                "show_drivers": True,
+                                "driver_categories": data.get("driver_categories", {}),
+                                "note": "Driver layer ready for visualization"
+                            }
+                        }
+                    else:
+                        logger.error(f"No tile_url in response: {data}")
+                        return {
+                            "status": "error",
+                            "message": "No tile URL in API response"
+                        }
+                else:
+                    logger.error(f"Tiles API error: {response.status_code} - {response.text}")
+                    return {
+                        "status": "error",
+                        "message": f"Tiles API returned status {response.status_code}"
+                    }
+                    
+            except httpx.RequestError as e:
+                logger.error(f"HTTP request failed: {e}")
+                return {
+                    "status": "error",
+                    "message": f"Failed to fetch driver tiles: {str(e)}"
+                }
+            
+        except Exception as e:
+            logger.error(f"Driver query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
 
 orchestrator = LLMOrchestrator()

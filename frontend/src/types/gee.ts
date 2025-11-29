@@ -1,5 +1,6 @@
 /**
  * TypeScript types for Google Earth Engine integration
+ * WITH DRIVER LAYER SUPPORT
  * Location: frontend/src/types/gee.ts
  */
 
@@ -33,18 +34,44 @@ export interface HansenForestTiles {
   generated_at: string;
 }
 
-// Layer visibility state
+// 🟢 NEW: Driver category information
+export interface DriverCategory {
+  name: string;
+  color: string;
+  description: string;
+}
+
+// 🟢 NEW: Driver tiles response
+export interface DriverTiles {
+  success: boolean;
+  country_iso: string;
+  driver_type: string;
+  tile_url: string;
+  driver_categories: {
+    [key: number]: DriverCategory;
+  };
+  dataset_info: {
+    source: string;
+    resolution: string;
+    year: string;
+    citation: string;
+  };
+}
+
+// Layer visibility state (UPDATED with drivers)
 export interface LayerVisibility {
   baseline: boolean;
   loss: boolean;
   gain: boolean;
+  drivers: boolean; // 🟢 NEW: Driver layer visibility
 }
 
-// Layer opacity state
+// Layer opacity state (UPDATED with drivers)
 export interface LayerOpacity {
   baseline: number;
   loss: number;
   gain: number;
+  drivers: number; // 🟢 NEW: Driver layer opacity
 }
 
 // GEE Health check response

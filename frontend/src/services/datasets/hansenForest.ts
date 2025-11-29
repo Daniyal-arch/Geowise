@@ -1,32 +1,35 @@
 /**
  * Hansen Forest Change Dataset Utilities
- * Dataset-specific logic for UMD Hansen Global Forest Change
+ * WITH DRIVER LAYER SUPPORT
+ * Dataset-specific logic for UMD Hansen Global Forest Change + Curtis Drivers
  * Location: frontend/src/services/datasets/hansenForest.ts
  */
 
-import type { HansenForestTiles, LayerVisibility, LayerOpacity } from '@/types/gee';
+import type { HansenForestTiles, DriverTiles, LayerVisibility, LayerOpacity } from '@/types/gee';
 import type { Map as MapLibreMap } from 'maplibre-gl';
 
 /**
- * Default layer visibility settings
+ * Default layer visibility settings (UPDATED with drivers)
  */
 export const DEFAULT_VISIBILITY: LayerVisibility = {
   baseline: true,   // Show tree cover by default
   loss: true,       // Show deforestation by default
-  gain: false       // Hide gain by default (sparse data)
+  gain: false,      // Hide gain by default (sparse data)
+  drivers: false    // 🟢 NEW: Hide drivers by default (shown on query)
 };
 
 /**
- * Default layer opacity settings
+ * Default layer opacity settings (UPDATED with drivers)
  */
 export const DEFAULT_OPACITY: LayerOpacity = {
   baseline: 0.6,  // 60% - Let basemap show through
   loss: 0.8,      // 80% - Emphasize deforestation
-  gain: 0.3       // 30% - Subtle (sparse data)
+  gain: 0.3,      // 30% - Subtle (sparse data)
+  drivers: 0.7    // 🟢 NEW: 70% - Visible but not overwhelming
 };
 
 /**
- * Layer metadata for UI rendering
+ * Layer metadata for UI rendering (UPDATED with drivers)
  */
 export const LAYER_METADATA = {
   baseline: {
@@ -49,6 +52,13 @@ export const LAYER_METADATA = {
     color: 'blue',
     gradient: 'from-blue-400 to-blue-600',
     yearRange: '2000-2012'
+  },
+  drivers: {
+    name: 'Loss Drivers',
+    description: 'Deforestation drivers & causes',
+    color: 'orange',
+    gradient: 'from-orange-400 to-red-600',
+    yearRange: '2001-2015'
   }
 };
 
@@ -134,6 +144,61 @@ export function addHansenLayers(
 }
 
 /**
+ * 🟢 NEW: Add driver layer to map
+ */
+export function addDriverLayer(
+  map: MapLibreMap,
+  driverData: DriverTiles,
+  opacity: number = 0.7,
+  visible: boolean = true
+): void {
+  console.log('[Drivers] Adding driver layer to map...');
+
+  // Remove existing driver layer if present
+  if (map.getLayer('gee-drivers-layer')) {
+    map.removeLayer('gee-drivers-layer');
+  }
+  if (map.getSource('gee-drivers')) {
+    map.removeSource('gee-drivers');
+  }
+
+  // Add driver source
+  map.addSource('gee-drivers', {
+    type: 'raster',
+    tiles: [driverData.tile_url],
+    tileSize: 256
+  });
+
+  // Add driver layer
+  map.addLayer({
+    id: 'gee-drivers-layer',
+    type: 'raster',
+    source: 'gee-drivers',
+    paint: {
+      'raster-opacity': opacity
+    },
+    layout: {
+      visibility: visible ? 'visible' : 'none'
+    }
+  });
+
+  console.log('[Drivers] ✅ Driver layer added');
+}
+
+/**
+ * 🟢 NEW: Remove driver layer from map
+ */
+export function removeDriverLayer(map: MapLibreMap): void {
+  if (map.getLayer('gee-drivers-layer')) {
+    map.removeLayer('gee-drivers-layer');
+  }
+  if (map.getSource('gee-drivers')) {
+    map.removeSource('gee-drivers');
+  }
+  console.log('[Drivers] ✅ Driver layer removed');
+}
+
+/**
  * Remove Hansen layers from map
  */
 export function removeHansenLayers(map: MapLibreMap): void {
@@ -200,4 +265,11 @@ export function hasHansenLayers(map: MapLibreMap): boolean {
     map.getLayer('gee-loss-layer') ||
     map.getLayer('gee-gain-layer')
   );
+}
+
+/**
+ * 🟢 NEW: Check if driver layer exists on map
+ */
+export function hasDriverLayer(map: MapLibreMap): boolean {
+  return Boolean(map.getLayer('gee-drivers-layer'));
 }

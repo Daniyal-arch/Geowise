@@ -10,6 +10,11 @@ WHY THIS APPROACH:
 - Can optionally cache results in SQLite for performance
 - Keeps implementation simple - SQLite stores metadata, not raster data
 - GFW handles the heavy lifting (30m resolution data)
+
+ENHANCEMENTS (v2.0):
+✅ Solution 1: analyze_deforestation_trend accepts pre-fetched stats (no duplicate calls)
+✅ Solution 2: In-memory caching for get_country_forest_stats (1-hour cache)
+✅ Solution 3: Cache management methods for clearing/inspecting cache
 """
 
 import requests
@@ -17,6 +22,7 @@ from datetime import datetime
 from typing import Dict, Optional, List
 import os
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,11 @@ class ForestMonitor:
     - Fetches data on-demand from GFW API
     - Results can be cached in SQLite if needed (see cache methods)
     - No spatial extensions required (GFW handles spatial queries)
+    
+    CACHING:
+    - In-memory cache for get_country_forest_stats (1-hour TTL)
+    - Prevents duplicate API calls within same session
+    - Cache automatically expires after timeout
     """
     
     # GFW Tile Servers for Visualization
@@ -83,7 +94,11 @@ class ForestMonitor:
             "Content-Type": "application/json"
         }
         
-        logger.info("GFW ForestMonitor initialized (SQLite mode)")
+        # 🟢 SOLUTION 2: Initialize cache
+        self._cache = {}
+        self._cache_timeout = 3600  # 1 hour in seconds
+        
+        logger.info("GFW ForestMonitor initialized (SQLite mode with caching)")
     
     def get_country_geostore(self, country_iso: str) -> Optional[Dict]:
         """
@@ -172,12 +187,6 @@ class ForestMonitor:
             )
 
             print(f"📡 Response received: Status {response.status_code}")
-            response = requests.post(
-                url,
-                headers=self.headers,
-                json=payload,
-                timeout=90
-            )
             
             if response.status_code == 200:
                 result = response.json()
@@ -237,7 +246,37 @@ class ForestMonitor:
             return None
     
     def get_country_forest_stats(self, country_iso: str) -> Optional[Dict]:
-        """Get comprehensive forest statistics for a country"""
+        """
+        Get comprehensive forest statistics for a country
+        
+        🟢 SOLUTION 2: Now with in-memory caching (1-hour TTL)
+        - Checks cache first before calling API
+        - Stores result in cache with timestamp
+        - Cache automatically expires after 1 hour
+        
+        Args:
+            country_iso: 3-letter ISO code
+        
+        Returns:
+            Dict with forest statistics or None
+        """
+        
+        # 🟢 SOLUTION 2: Check cache first
+        cache_key = f"forest_stats_{country_iso}"
+        if cache_key in self._cache:
+            cached_data, cached_time = self._cache[cache_key]
+            cache_age = time.time() - cached_time
+            
+            if cache_age < self._cache_timeout:
+                logger.info(f"✅ Using cached forest stats for {country_iso} (age: {int(cache_age)}s)")
+                return cached_data
+            else:
+                logger.info(f"⏰ Cache expired for {country_iso} (age: {int(cache_age)}s > {self._cache_timeout}s)")
+                # Remove expired cache
+                del self._cache[cache_key]
+        
+        # Cache miss or expired - fetch from API
+        logger.info(f"🔄 Fetching fresh forest stats for {country_iso}")
         
         geostore_data = self.get_country_geostore(country_iso)
         if not geostore_data:
@@ -254,7 +293,7 @@ class ForestMonitor:
         
         if not forest_stats:
             logger.warning(f"No forest stats available for {country_iso}")
-            return {
+            result = {
                 "country_iso": country_iso,
                 "country_name": country_name,
                 "geostore_id": geostore_id,
@@ -262,6 +301,8 @@ class ForestMonitor:
                 "message": "Forest statistics unavailable",
                 "last_updated": datetime.now().isoformat()
             }
+            # Don't cache errors
+            return result
         
         yearly_data = forest_stats.get("yearly_data", [])
         
@@ -270,7 +311,7 @@ class ForestMonitor:
             total_loss = sum(float(item.get("loss_ha", 0)) for item in yearly_data)
             recent_loss = yearly_data[-1]
             
-            return {
+            result = {
                 "country_iso": country_iso,
                 "country_name": country_name,
                 "geostore_id": geostore_id,
@@ -285,7 +326,7 @@ class ForestMonitor:
                 "last_updated": datetime.now().isoformat()
             }
         else:
-            return {
+            result = {
                 "country_iso": country_iso,
                 "country_name": country_name,
                 "geostore_id": geostore_id,
@@ -293,10 +334,40 @@ class ForestMonitor:
                 "message": "No yearly data available",
                 "last_updated": datetime.now().isoformat()
             }
-    def analyze_deforestation_trend(self, country_iso: str) -> Optional[Dict]:
-        """Analyze deforestation trends over time"""
         
-        stats = self.get_country_forest_stats(country_iso)
+        # 🟢 SOLUTION 2: Cache the result
+        if result.get("tree_cover_loss"):  # Only cache successful results
+            self._cache[cache_key] = (result, time.time())
+            logger.info(f"💾 Cached forest stats for {country_iso}")
+        
+        return result
+    
+    def analyze_deforestation_trend(
+        self, 
+        country_iso: str,
+        forest_stats: Optional[Dict] = None
+    ) -> Optional[Dict]:
+        """
+        Analyze deforestation trends over time
+        
+        🟢 SOLUTION 1: Now accepts pre-fetched forest_stats to avoid duplicate API calls
+        
+        Args:
+            country_iso: 3-letter ISO code
+            forest_stats: Pre-fetched forest stats (optional, fetches if not provided)
+        
+        Returns:
+            Dict with trend analysis
+        """
+        
+        # 🟢 SOLUTION 1: Use pre-fetched stats if provided, otherwise fetch
+        if forest_stats is None:
+            logger.info(f"No pre-fetched stats provided, fetching for {country_iso}")
+            stats = self.get_country_forest_stats(country_iso)
+        else:
+            logger.info(f"✅ Using pre-fetched stats for {country_iso} (avoiding duplicate API call)")
+            stats = forest_stats
+        
         if not stats or not stats.get("tree_cover_loss"):
             return {
                 "country_iso": country_iso,
@@ -399,113 +470,115 @@ class ForestMonitor:
             "COL",  # Colombia
             "MEX",  # Mexico
         ]
+    
     def get_yearly_tree_loss_by_driver(self, country_iso: str, 
                                    start_year: Optional[int] = None,
                                    end_year: Optional[int] = None) -> Optional[Dict]:
+        """
+        Get yearly tree cover loss statistics broken down by driver
+        
+        Returns loss data categorized by:
+        - Commodity driven deforestation
+        - Shifting agriculture
+        - Forestry
+        - Wildfire
+        - Urbanization
+        - Unknown
+        
+        Args:
+            country_iso: 3-letter ISO code
+            start_year: Optional start year
+            end_year: Optional end year
+        
+        Returns:
+            Dict with driver breakdown
+        """
+        try:
+            url = f"{self.base_url}/dataset/gadm__tcl__iso_change/latest/query/json"
+            
+            # Build SQL query with driver grouping
+            sql = f"""
+            SELECT 
+                v20250515.umd_tree_cover_loss__year as year,
+                v20250515.wri_google_tree_cover_loss_drivers__category as driver,
+                SUM(v20250515.umd_tree_cover_loss__ha) as loss_ha,
+                COUNT(*) as pixel_count
+            FROM v20250515
+            WHERE v20250515.iso = '{country_iso}'
+            AND v20250515.umd_tree_cover_loss__year IS NOT NULL
             """
-            Get yearly tree cover loss statistics broken down by driver
             
-            Returns loss data categorized by:
-            - Commodity driven deforestation
-            - Shifting agriculture
-            - Forestry
-            - Wildfire
-            - Urbanization
-            - Unknown
+            if start_year:
+                sql += f" AND v20250515.umd_tree_cover_loss__year >= {start_year}"
+            if end_year:
+                sql += f" AND v20250515.umd_tree_cover_loss__year <= {end_year}"
             
-            Args:
-                country_iso: 3-letter ISO code
-                start_year: Optional start year
-                end_year: Optional end year
-            
-            Returns:
-                Dict with driver breakdown
+            sql += """
+            GROUP BY v20250515.umd_tree_cover_loss__year, 
+                    v20250515.wri_google_tree_cover_loss_drivers__category
+            ORDER BY v20250515.umd_tree_cover_loss__year, loss_ha DESC
             """
-            try:
-                url = f"{self.base_url}/dataset/gadm__tcl__iso_change/latest/query/json"
+            
+            payload = {"sql": sql.strip()}
+            
+            logger.info(f"Querying forest loss by driver for {country_iso}")
+            
+            response = requests.post(
+                url,
+                headers=self.headers,
+                json=payload,
+                timeout=90
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                data = result.get("data", [])
                 
-                # Build SQL query with driver grouping
-                sql = f"""
-                SELECT 
-                    v20250515.umd_tree_cover_loss__year as year,
-                    v20250515.wri_google_tree_cover_loss_drivers__category as driver,
-                    SUM(v20250515.umd_tree_cover_loss__ha) as loss_ha,
-                    COUNT(*) as pixel_count
-                FROM v20250515
-                WHERE v20250515.iso = '{country_iso}'
-                AND v20250515.umd_tree_cover_loss__year IS NOT NULL
-                """
-                
-                if start_year:
-                    sql += f" AND v20250515.umd_tree_cover_loss__year >= {start_year}"
-                if end_year:
-                    sql += f" AND v20250515.umd_tree_cover_loss__year <= {end_year}"
-                
-                sql += """
-                GROUP BY v20250515.umd_tree_cover_loss__year, 
-                        v20250515.wri_google_tree_cover_loss_drivers__category
-                ORDER BY v20250515.umd_tree_cover_loss__year, loss_ha DESC
-                """
-                
-                payload = {"sql": sql.strip()}
-                
-                logger.info(f"Querying forest loss by driver for {country_iso}")
-                
-                response = requests.post(
-                    url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=90
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    data = result.get("data", [])
-                    
-                    if not data:
-                        logger.warning(f"No driver data for {country_iso}")
-                        return None
-                    
-                    # Group by year
-                    by_year = {}
-                    for row in data:
-                        year = int(row.get('year'))
-                        driver = row.get('driver') or 'Unknown'
-                        loss_ha = float(row.get('loss_ha', 0))
-                        
-                        if year not in by_year:
-                            by_year[year] = {
-                                'year': year,
-                                'total_loss_ha': 0,
-                                'drivers': []
-                            }
-                        
-                        by_year[year]['total_loss_ha'] += loss_ha
-                        by_year[year]['drivers'].append({
-                            'driver_category': driver,
-                            'loss_ha': round(loss_ha, 2),
-                            'pixel_count': int(row.get('pixel_count', 0))
-                        })
-                    
-                    # Calculate percentages
-                    for year_data in by_year.values():
-                        total = year_data['total_loss_ha']
-                        for driver in year_data['drivers']:
-                            driver['percentage'] = round((driver['loss_ha'] / total) * 100, 1) if total > 0 else 0
-                    
-                    logger.info(f"✅ Got driver breakdown for {len(by_year)} years")
-                    
-                    return {
-                        'yearly_data': list(by_year.values()),
-                        'dataset': 'GFW WRI Tree Cover Loss Drivers'
-                    }
-                else:
-                    logger.error(f"Driver API error: {response.status_code}")
+                if not data:
+                    logger.warning(f"No driver data for {country_iso}")
                     return None
+                
+                # Group by year
+                by_year = {}
+                for row in data:
+                    year = int(row.get('year'))
+                    driver = row.get('driver') or 'Unknown'
+                    loss_ha = float(row.get('loss_ha', 0))
                     
-            except Exception as e:
-                logger.error(f"Error getting driver data: {str(e)}")
+                    if year not in by_year:
+                        by_year[year] = {
+                            'year': year,
+                            'total_loss_ha': 0,
+                            'drivers': []
+                        }
+                    
+                    by_year[year]['total_loss_ha'] += loss_ha
+                    by_year[year]['drivers'].append({
+                        'driver_category': driver,
+                        'loss_ha': round(loss_ha, 2),
+                        'pixel_count': int(row.get('pixel_count', 0))
+                    })
+                
+                # Calculate percentages
+                for year_data in by_year.values():
+                    total = year_data['total_loss_ha']
+                    for driver in year_data['drivers']:
+                        driver['percentage'] = round((driver['loss_ha'] / total) * 100, 1) if total > 0 else 0
+                
+                logger.info(f"✅ Got driver breakdown for {len(by_year)} years")
+                
+                return {
+                    'yearly_data': list(by_year.values()),
+                    'dataset': 'GFW WRI Tree Cover Loss Drivers'
+                }
+            else:
+                logger.error(f"Driver API error: {response.status_code}")
                 return None
+                
+        except Exception as e:
+            logger.error(f"Error getting driver data: {str(e)}")
+            return None
+    
     def get_loss_geometries(self, country_iso: str, year: int, limit: int = 5000) -> Optional[Dict]:
         """
         Get actual GeoJSON polygons of deforested areas for a specific year
@@ -624,6 +697,74 @@ class ForestMonitor:
             import traceback
             traceback.print_exc()
             return None
+    
+    # 🟢 SOLUTION 3: Cache management methods
+    
+    def clear_cache(self, country_iso: Optional[str] = None) -> Dict:
+        """
+        Clear cache for specific country or all countries
+        
+        Args:
+            country_iso: Optional 3-letter ISO code (clears all if None)
+        
+        Returns:
+            Dict with cache clear status
+        """
+        if country_iso:
+            cache_key = f"forest_stats_{country_iso}"
+            if cache_key in self._cache:
+                del self._cache[cache_key]
+                logger.info(f"🗑️ Cleared cache for {country_iso}")
+                return {
+                    "status": "success",
+                    "message": f"Cache cleared for {country_iso}",
+                    "keys_cleared": 1
+                }
+            else:
+                return {
+                    "status": "info",
+                    "message": f"No cache found for {country_iso}",
+                    "keys_cleared": 0
+                }
+        else:
+            keys_cleared = len(self._cache)
+            self._cache.clear()
+            logger.info(f"🗑️ Cleared all cache ({keys_cleared} entries)")
+            return {
+                "status": "success",
+                "message": "All cache cleared",
+                "keys_cleared": keys_cleared
+            }
+    
+    def get_cache_info(self) -> Dict:
+        """
+        Get information about current cache state
+        
+        Returns:
+            Dict with cache statistics
+        """
+        cache_entries = []
+        current_time = time.time()
+        
+        for key, (data, cached_time) in self._cache.items():
+            age_seconds = current_time - cached_time
+            country = key.replace("forest_stats_", "")
+            
+            cache_entries.append({
+                "country": country,
+                "age_seconds": int(age_seconds),
+                "age_minutes": round(age_seconds / 60, 1),
+                "expires_in_seconds": int(self._cache_timeout - age_seconds),
+                "is_expired": age_seconds >= self._cache_timeout
+            })
+        
+        return {
+            "total_entries": len(self._cache),
+            "cache_timeout_seconds": self._cache_timeout,
+            "cache_timeout_hours": self._cache_timeout / 3600,
+            "entries": cache_entries
+        }
+    
     def health_check(self) -> Dict:
         """
         Check if the GFW API is accessible
@@ -645,6 +786,7 @@ class ForestMonitor:
                 "status_code": response.status_code,
                 "api_accessible": api_healthy,
                 "base_url": self.base_url,
+                "cache_entries": len(self._cache),
                 "timestamp": datetime.now().isoformat()
             }
         except Exception as e:
@@ -652,5 +794,6 @@ class ForestMonitor:
                 "status": "error",
                 "error": str(e),
                 "api_accessible": False,
+                "cache_entries": len(self._cache),
                 "timestamp": datetime.now().isoformat()
             }
