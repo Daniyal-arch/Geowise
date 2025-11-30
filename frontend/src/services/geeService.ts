@@ -1,13 +1,4 @@
-/**
- * Main GEE Service - API Client
- * WITH DRIVER LAYER SUPPORT
- * Handles all communication with GEE backend
- * Location: frontend/src/services/geeService.ts
- * 
- * ✅ FIXED: Proper endpoint paths
- * - Hansen tiles: /api/v1/gee/tiles/{country}
- * - Driver tiles: /api/v1/tiles/{country}/drivers
- */
+
 
 import type { GEEHealthResponse, HansenForestTiles, DriverTiles } from '@/types/gee';
 
@@ -120,4 +111,4 @@ export async function getDriverTiles(
  */
 export function isValidCountryISO(code: string): boolean {
   return /^[A-Z]{3}$/.test(code.toUpperCase());
-}
+} 

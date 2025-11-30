@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { getCountryData, detectCountryFromQuery, getCountryName } from '@/utils/countryCoordinates';
-
+import { getCountryBoundary } from '@/services/boundaries';
+import { DEFAULT_BOUNDARY_STYLE } from '@/types/gee';
 // GEE imports
 import { getHansenForestTiles, getDriverTiles } from '@/services/geeService';
 import { 
@@ -15,7 +16,7 @@ import {
   removeDriverLayer,
   hasDriverLayer 
 } from '@/services/datasets/hansenForest';
-import type { LayerVisibility, DriverTiles } from '@/types/gee';
+import type { LayerVisibility, DriverTiles } from '@/types/gee'; 
 
 export default function Dashboard() {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -38,12 +39,17 @@ export default function Dashboard() {
     drivers: false
   });
 
-  // 🟢 NEW: Stats panel toggle
+  //  Stats panel toggle
   const [showStatsPanel, setShowStatsPanel] = useState(true);
 
-  // 🟢 NEW: Driver layer data
+  //  Driver layer data
   const [driverLayerData, setDriverLayerData] = useState<DriverTiles | null>(null);
-
+ 
+  //  Boundary layer tracking  
+  const [showBoundary, setShowBoundary] = useState(false);
+  const BOUNDARY_SOURCE_ID = 'country-boundary-source';
+  const BOUNDARY_FILL_ID = 'country-boundary-fill';
+  const BOUNDARY_LINE_ID = 'country-boundary-line';
   const [forestStats, setForestStats] = useState<{
     totalLoss: number;
     recentYear: number;
@@ -149,7 +155,102 @@ export default function Dashboard() {
     
     setCurrentCountry(countryCode);
   };
+  //  country boundary visualization
+  const addCountryBoundary = async (countryCode: string) => {
+    if (!map.current || !mapLoaded) return;
+    
+    try {
+      console.log('[Boundary] Loading boundary for:', countryCode);
+      
+      // Remove old boundary if exists
+      removeCountryBoundary();
+      
+      // Fetch boundary GeoJSON
+      const boundaryData = await getCountryBoundary(countryCode);
+      
+      if (!boundaryData) {
+        console.warn('[Boundary] No boundary data for:', countryCode);
+        return;
+      }
+      
+      // Add source
+      if (!map.current.getSource(BOUNDARY_SOURCE_ID)) {
+        map.current.addSource(BOUNDARY_SOURCE_ID, {
+          type: 'geojson',
+          data: boundaryData
+        });
+      } else {
+        (map.current.getSource(BOUNDARY_SOURCE_ID) as maplibregl.GeoJSONSource).setData(boundaryData);
+      }
+      
+      // Add fill layer (subtle yellow highlight)
+      if (!map.current.getLayer(BOUNDARY_FILL_ID)) {
+        map.current.addLayer({
+          id: BOUNDARY_FILL_ID,
+          type: 'fill',
+          source: BOUNDARY_SOURCE_ID,
+          paint: {
+            'fill-color': DEFAULT_BOUNDARY_STYLE.fillColor || '#FFFF00',
+            'fill-opacity': DEFAULT_BOUNDARY_STYLE.fillOpacity || 0.05
+          }
+        });
+      }
+      
+      // Add line layer (bright cyan border)
+      if (!map.current.getLayer(BOUNDARY_LINE_ID)) {
+        map.current.addLayer({
+          id: BOUNDARY_LINE_ID,
+          type: 'line',
+          source: BOUNDARY_SOURCE_ID,
+          paint: {
+            'line-color': DEFAULT_BOUNDARY_STYLE.lineColor,
+            'line-width': DEFAULT_BOUNDARY_STYLE.lineWidth,
+            'line-opacity': DEFAULT_BOUNDARY_STYLE.lineOpacity
+          }
+        });
+      }
+      
+      setShowBoundary(true);
+      console.log('[Boundary] ✅ Boundary added for:', countryCode);
+      
+    } catch (error) {
+      console.error('[Boundary] Error adding boundary:', error);
+    }
+  };
 
+  // 🟢 NEW: Remove country boundary
+  const removeCountryBoundary = () => {
+    if (!map.current) return;
+    
+    if (map.current.getLayer(BOUNDARY_LINE_ID)) {
+      map.current.removeLayer(BOUNDARY_LINE_ID);
+    }
+    
+    if (map.current.getLayer(BOUNDARY_FILL_ID)) {
+      map.current.removeLayer(BOUNDARY_FILL_ID);
+    }
+    
+    if (map.current.getSource(BOUNDARY_SOURCE_ID)) {
+      map.current.removeSource(BOUNDARY_SOURCE_ID);
+    }
+    
+    setShowBoundary(false);
+  };
+
+  // 🟢 NEW: Toggle boundary visibility
+  const toggleBoundaryVisibility = (visible: boolean) => {
+    if (!map.current) return;
+    
+    const visibility = visible ? 'visible' : 'none';
+    
+    if (map.current.getLayer(BOUNDARY_FILL_ID)) {
+      map.current.setLayoutProperty(BOUNDARY_FILL_ID, 'visibility', visibility);
+    }
+    
+    if (map.current.getLayer(BOUNDARY_LINE_ID)) {
+      map.current.setLayoutProperty(BOUNDARY_LINE_ID, 'visibility', visibility);
+    }
+  };
   const handleSendQuery = async () => {
     if (!chatInput.trim() || isLoadingQuery) return;
 
@@ -200,6 +301,7 @@ export default function Dashboard() {
       if (responseCountry && countryChanged) {
         flyToCountry(responseCountry);
         setCurrentCountry(responseCountry);
+        
       }
 
       // ========================================
@@ -264,6 +366,8 @@ export default function Dashboard() {
               setVisibleLayers(defaultVisibility);
               
               console.log('[Dashboard] ✅ Hansen layers loaded successfully');
+              // BOUNDARY ON TOP OF HANSEN LAYERS
+             await addCountryBoundary(responseCountry);
             } catch (hansenError) {
               console.error('[Dashboard] ❌ Hansen layer error:', hansenError);
             }
@@ -489,6 +593,22 @@ export default function Dashboard() {
                       <div className="flex-1">
                         <div className="text-xs font-medium text-gray-200">Loss Drivers</div>
                         <div className="text-[10px] text-gray-500">2001-2024</div>
+                      </div>
+                    </label>
+                  )}
+                  {/* 🟢 NEW: Boundary toggle */}
+                  {showBoundary && (
+                    <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border bg-slate-800 border-slate-700`}>
+                      <input 
+                        type="checkbox" 
+                        defaultChecked={true}
+                        onChange={(e) => toggleBoundaryVisibility(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded accent-cyan-600 bg-slate-800 border-slate-700"
+                      />
+                      <div className="w-3.5 h-3.5 rounded-sm bg-gradient-to-br from-cyan-400 to-cyan-600"></div>
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-gray-200">Country Boundary</div>
+                        <div className="text-[10px] text-gray-500">{getCountryName(currentCountry)}</div>
                       </div>
                     </label>
                   )}
