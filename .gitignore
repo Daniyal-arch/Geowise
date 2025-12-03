@@ -1,0 +1,39 @@
+﻿# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.sqlite3
+
+# Node.js
+node_modules/
+.next/
+package-lock.json
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Sensitive
+gee-service-account-key.json
+
+# Data
+data/fires/historical/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+backend/data/fires/historical/

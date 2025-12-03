@@ -1,0 +1,22 @@
+{
+  "country": "IDN",
+  "country_name": "Indonesia",
+  "data_summary": {
+    "total_fires": 1301952,
+    "date_range": {
+      "start": "2015-01-01 00:00:00.000000",
+      "end": "2019-12-31 00:00:00.000000"
+    },
+    "years_available": [
+      2015,
+      2019
+    ],
+    "avg_frp": 8.14,
+    "satellites": 1
+  },
+  "last_updated": "2025-11-18T12:06:09.732750",
+  "data_sources": [
+    "NASA FIRMS VIIRS"
+  ],
+  "resolution": "375m"
+}
