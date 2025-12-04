@@ -326,9 +326,9 @@ const FIRE_LAYER_ID = 'fires-layer';
 const addFireMarkers = (fires: any[]) => {
   if (!map.current || !mapLoaded) return;
   
-  console.log('[Fire] Adding hybrid fire visualization:', fires.length);
+  console.log('[Fire] Adding fire markers:', fires.length);
   
-  // Remove existing fire layers
+  // Remove existing fire layer
   removeFireMarkers();
   
   // Create GeoJSON from fires
@@ -352,241 +352,46 @@ const addFireMarkers = (fires: any[]) => {
     }))
   };
   
+  // Add source
   map.current.addSource(FIRE_SOURCE_ID, {
     type: 'geojson',
-    data: fireGeoJSON,
-    cluster: true,
-    clusterMaxZoom: 9, // Cluster until zoom 9
-    clusterRadius: 50  // Radius of each cluster in pixels
+    data: fireGeoJSON
   });
   
-  // ========================================
-  // LAYER 1: HEATMAP (Zoom 0-7)
-  // Shows smooth density visualization at world/country scale
-  // ========================================
-  map.current.addLayer({
-    id: 'fires-heatmap',
-    type: 'heatmap',
-    source: FIRE_SOURCE_ID,
-    maxzoom: 9,
-    paint: {
-      // Weight by FRP (fire radiative power)
-      'heatmap-weight': [
-        'interpolate',
-        ['linear'],
-        ['get', 'frp'],
-        0, 0.5,
-        10, 0.8,
-        20, 1
-      ],
-      // Intensity increases with zoom
-      'heatmap-intensity': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        0, 0.6,
-        7, 2,
-        9, 3
-      ],
-      // Color ramp: yellow → orange → red
-      'heatmap-color': [
-        'interpolate',
-        ['linear'],
-        ['heatmap-density'],
-        0, 'rgba(255,255,0,0)',      // Transparent yellow
-        0.2, 'rgba(255,237,74,0.4)', // Light yellow
-        0.4, 'rgba(255,200,87,0.6)', // Orange-yellow
-        0.6, 'rgba(255,153,51,0.8)', // Orange
-        0.8, 'rgba(255,87,51,0.9)',  // Red-orange
-        1, 'rgba(239,68,68,1)'       // Red
-      ],
-      // Radius increases with zoom
-      'heatmap-radius': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        0, 3,
-        5, 10,
-        7, 20,
-        9, 30
-      ],
-      // Fade out as we zoom in (disappears at zoom 9)
-      'heatmap-opacity': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        0, 0.8,
-        7, 0.9,
-        8, 0.5,
-        9, 0
-      ]
-    }
-  });
-  
-  // ========================================
-  // LAYER 2: CLUSTERS (Zoom 7-11)
-  // Shows grouped fire counts with colored circles
-  // ========================================
-  map.current.addLayer({
-    id: 'fires-clusters',
-    type: 'circle',
-    source: FIRE_SOURCE_ID,
-    filter: ['has', 'point_count'],
-    minzoom: 7,
-    maxzoom: 14,
-    paint: {
-      // Cluster size based on point count
-      'circle-radius': [
-        'step',
-        ['get', 'point_count'],
-        15,   // radius for count < 10
-        10, 20,   // radius for count >= 10
-        30, 25,   // radius for count >= 30
-        50, 30,   // radius for count >= 50
-        100, 35   // radius for count >= 100
-      ],
-      // Cluster color based on count (yellow → orange → red)
-      'circle-color': [
-        'step',
-        ['get', 'point_count'],
-        '#FCD34D',  // Yellow for < 10
-        10, '#FB923C', // Light orange for 10-29
-        30, '#F97316', // Orange for 30-49
-        50, '#EF4444', // Red for 50-99
-        100, '#DC2626' // Dark red for 100+
-      ],
-      'circle-opacity': 0.85,
-      'circle-stroke-width': 2,
-      'circle-stroke-color': '#FFFFFF',
-      'circle-stroke-opacity': 0.8,
-      // Fade in clusters as heatmap fades out
-      'circle-opacity': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        7, 0,
-        8, 0.7,
-        9, 0.85
-      ]
-    }
-  });
-  
-  // ========================================
-  // LAYER 3: CLUSTER COUNT LABELS
-  // Shows number of fires in each cluster
-  // ========================================
-  map.current.addLayer({
-    id: 'fires-cluster-count',
-    type: 'symbol',
-    source: FIRE_SOURCE_ID,
-    filter: ['has', 'point_count'],
-    minzoom: 7,
-    maxzoom: 14,
-    layout: {
-      'text-field': '{point_count_abbreviated}',
-      'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
-      'text-size': 13
-    },
-    paint: {
-      'text-color': '#FFFFFF',
-      'text-halo-color': 'rgba(0,0,0,0.8)',
-      'text-halo-width': 1.5,
-      'text-opacity': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        7, 0,
-        8, 1
-      ]
-    }
-  });
-  
-  // ========================================
-  // LAYER 4: INDIVIDUAL FIRE POINTS (Zoom 9+)
-  // Shows individual fires with size based on FRP
-  // ========================================
+  // Add circle layer - SMALL CONSISTENT DOTS like NASA FIRMS
   map.current.addLayer({
     id: FIRE_LAYER_ID,
     type: 'circle',
     source: FIRE_SOURCE_ID,
-    filter: ['!', ['has', 'point_count']],
-    minzoom: 9,
     paint: {
-      // Size based on FRP, scales with zoom
+      // Small consistent radius (slightly increases with zoom for visibility)
       'circle-radius': [
         'interpolate',
         ['linear'],
         ['zoom'],
-        9, [
-          'interpolate',
-          ['linear'],
-          ['get', 'frp'],
-          0, 3,
-          10, 5,
-          20, 7
-        ],
-        14, [
-          'interpolate',
-          ['linear'],
-          ['get', 'frp'],
-          0, 5,
-          10, 8,
-          20, 12
-        ]
+        0, 1.5,   // Very small at world view
+        5, 2,     // Small at country view
+        8, 3,     // Medium-small at regional view
+        12, 4,    // Slightly larger at city view
+        16, 5     // Still small at street view
       ],
-      // Color by confidence level
+      // Color by confidence level (NASA FIRMS style)
       'circle-color': [
         'match',
         ['get', 'confidence'],
-        'h', '#EF4444',  // High - Red
-        'n', '#F97316',  // Nominal - Orange
-        'l', '#FCD34D',  // Low - Yellow
-        '#9CA3AF'        // Unknown - Gray
+        'h', '#FF0000',  // High - Bright Red
+        'n', '#FF6B00',  // Nominal - Orange-Red
+        'l', '#FFAA00',  // Low - Orange-Yellow
+        '#FF6B00'        // Default - Orange-Red
       ],
-      'circle-opacity': 0.85,
-      'circle-stroke-width': 1.5,
+      'circle-opacity': 0.8,
+      'circle-stroke-width': 0.5,
       'circle-stroke-color': '#FFFFFF',
-      'circle-stroke-opacity': 0.6,
-      // Fade in individual points
-      'circle-opacity': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        9, 0.5,
-        10, 0.85
-      ]
+      'circle-stroke-opacity': 0.4
     }
   });
   
-  // ========================================
-  // INTERACTIONS
-  // ========================================
-  
-  // Click on cluster to zoom in
-  map.current.on('click', 'fires-clusters', (e: any) => {
-    if (!e.features || e.features.length === 0) return;
-    
-    const features = map.current!.queryRenderedFeatures(e.point, {
-      layers: ['fires-clusters']
-    });
-    
-    if (features.length === 0) return;
-    
-    const clusterId = features[0].properties.cluster_id;
-    const source = map.current!.getSource(FIRE_SOURCE_ID) as any;
-    
-    source.getClusterExpansionZoom(clusterId, (err: any, zoom: number) => {
-      if (err) return;
-      
-      map.current!.easeTo({
-        center: (features[0].geometry as any).coordinates,
-        zoom: zoom + 1,
-        duration: 500
-      });
-    });
-  });
-  
-  // Click on individual fire to show popup
+  // Add popup on click
   map.current.on('click', FIRE_LAYER_ID, (e: any) => {
     if (!e.features || e.features.length === 0) return;
     
@@ -649,15 +454,7 @@ const addFireMarkers = (fires: any[]) => {
       .addTo(map.current!);
   });
   
-  // Cursor changes
-  map.current.on('mouseenter', 'fires-clusters', () => {
-    if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-  });
-  
-  map.current.on('mouseleave', 'fires-clusters', () => {
-    if (map.current) map.current.getCanvas().style.cursor = '';
-  });
-  
+  // Change cursor on hover
   map.current.on('mouseenter', FIRE_LAYER_ID, () => {
     if (map.current) map.current.getCanvas().style.cursor = 'pointer';
   });
@@ -666,9 +463,8 @@ const addFireMarkers = (fires: any[]) => {
     if (map.current) map.current.getCanvas().style.cursor = '';
   });
   
-  console.log('[Fire] ✅ Hybrid fire visualization added (heatmap → clusters → points)');
+  console.log('[Fire] ✅ Fire markers added (FIRMS style)');
 };
-
 const removeFireMarkers = () => {
   if (!map.current) return;
   
