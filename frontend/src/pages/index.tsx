@@ -487,6 +487,9 @@ const removeFireMarkers = () => {
   
   console.log('[Fire] Removed fire visualization layers');
 };
+
+
+
   const handleSendQuery = async () => {
   if (!chatInput.trim() || isLoadingQuery) return;
 
@@ -497,7 +500,7 @@ const removeFireMarkers = () => {
   
   const detectedCountry = detectCountryFromQuery(userMessage);
   
-  // 🟢 SMART: If query asks about drivers/causes but doesn't mention country, add current country
+  //  If query asks about drivers/causes but doesn't mention country, add current country
   let queryToSend = userMessage;
   const driverKeywords = ['driver', 'cause', 'why', 'reason', 'show me drivers', 'what are the'];
   const hasDriverIntent = driverKeywords.some(kw => userMessage.toLowerCase().includes(kw));
@@ -611,69 +614,73 @@ try {
       console.log('[Dashboard] Loading GEE tiles for:', responseCountry);
       console.log('[Dashboard] Intent:', apiResponse.intent);
       
+      //: Determine query type FIRST
+      const isDriverQuery = apiResponse.intent === 'query_drivers';
+      const isForestQuery = apiResponse.intent === 'query_forest';
       
-   
+      console.log('[Dashboard] Is driver query:', isDriverQuery);
+      console.log('[Dashboard] Is forest query:', isForestQuery);
+      console.log('[Dashboard] Country changed:', countryChanged);
+      
+      // ✅ CLEAR FIRE DATA when switching to forest/driver queries
+      if (isForestQuery || isDriverQuery) {
+        console.log('[Dashboard] Clearing fire data for forest/driver query');
+        setFireStats(null);
+        removeFireMarkers();
+      }
+      
+      if (countryChanged) {
+        console.log('[Dashboard] Country changed - removing all layers');
         
-        //: Determine query type FIRST
-        const isDriverQuery = apiResponse.intent === 'query_drivers';
-        const isForestQuery = apiResponse.intent === 'query_forest';
+        // Remove all existing layers
+        removeHansenLayers(map.current);
+        if (hasDriverLayer(map.current)) {
+          removeDriverLayer(map.current);
+        }
         
-        console.log('[Dashboard] Is driver query:', isDriverQuery);
-        console.log('[Dashboard] Is forest query:', isForestQuery);
-        console.log('[Dashboard] Country changed:', countryChanged);
+        setAvailableLayers([]);
+        setDriverLayerData(null);
+      }
+      
+      // ========================================
+      // LOAD HANSEN LAYERS (for forest queries)
+      // ========================================
+      if (isForestQuery && (countryChanged || availableLayers.length === 0)) {
+        console.log('[Dashboard] Loading Hansen tiles (baseline/loss/gain)...');
         
-        if (countryChanged) {
-          console.log('[Dashboard] Country changed - removing all layers');
+        try {
+          const geeData = await getHansenForestTiles(responseCountry);
           
-          // Remove all existing layers
+          const defaultVisibility: LayerVisibility = {
+            baseline: true,
+            loss: true,
+            gain: false,
+            drivers: false
+          };
+          
+          const defaultOpacity = {
+            baseline: 0.6,
+            loss: 0.8,
+            gain: 0.3,
+            drivers: 0.7
+          };
+          
+          // Remove old Hansen layers before adding new ones
           removeHansenLayers(map.current);
-          if (hasDriverLayer(map.current)) {
-            removeDriverLayer(map.current);
-          }
           
-          setAvailableLayers([]);
-          setDriverLayerData(null);
-        }
-        
-        // ========================================
-        // LOAD HANSEN LAYERS (for forest queries)
-        // ========================================
-        if (isForestQuery && (countryChanged || availableLayers.length === 0)) {
-          console.log('[Dashboard] Loading Hansen tiles (baseline/loss/gain)...');
+          // Add Hansen layers
+          addHansenLayers(map.current, geeData, defaultVisibility, defaultOpacity);
           
-          try {
-            const geeData = await getHansenForestTiles(responseCountry);
-            
-            const defaultVisibility: LayerVisibility = {
-              baseline: true,
-              loss: true,
-              gain: false,
-              drivers: false
-            };
-            
-            const defaultOpacity = {
-              baseline: 0.6,
-              loss: 0.8,
-              gain: 0.3,
-              drivers: 0.7
-            };
-            
-            // Remove old Hansen layers before adding new ones
-            removeHansenLayers(map.current);
-            
-            // Add Hansen layers
-            addHansenLayers(map.current, geeData, defaultVisibility, defaultOpacity);
-            
-            setAvailableLayers(['baseline', 'loss', 'gain']);
-            setVisibleLayers(defaultVisibility);
-            
-            console.log('[Dashboard] ✅ Hansen layers loaded successfully');
-            // BOUNDARY ON TOP OF HANSEN LAYERS
-            await addCountryBoundary(responseCountry);
-          } catch (hansenError) {
-            console.error('[Dashboard] ❌ Hansen layer error:', hansenError);
-          }
+          setAvailableLayers(['baseline', 'loss', 'gain']);
+          setVisibleLayers(defaultVisibility);
+          
+          console.log('[Dashboard] ✅ Hansen layers loaded successfully');
+          // BOUNDARY ON TOP OF HANSEN LAYERS
+          await addCountryBoundary(responseCountry);
+        } catch (hansenError) {
+          console.error('[Dashboard] ❌ Hansen layer error:', hansenError);
         }
+      }
         
         // ========================================
         // LOAD DRIVER LAYER (for driver queries ONLY)
@@ -775,8 +782,8 @@ try {
   return (
     <div className="relative h-screen w-screen bg-slate-950 text-gray-100 antialiased overflow-hidden">
       
-      {/* Header */}
-      <header className="relative z-50 flex h-14 items-center justify-between px-6 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800 shadow-sm">
+      {/* Header - Fixed at top with higher z-index */}
+      <header className="fixed top-0 left-0 right-0 z-50 flex h-14 items-center justify-between px-6 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800 shadow-sm">
         <div className="flex items-center gap-2.5">
           <div className="h-7 w-7 overflow-hidden">
             <img src="https://api.designfast.io/v1/svg_generator/findone?desc=abstract_globe_icon&icon_set=tabler&color=FFFFFF" alt="Logo" className="h-full w-full"/>
@@ -785,8 +792,8 @@ try {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* 🟢 NEW: Stats panel toggle button */}
-          {hasQueried && forestStats && (
+          {/*  Stats panel toggle button */}
+          {hasQueried && (forestStats || fireStats) && (
             <button
               onClick={() => setShowStatsPanel(!showStatsPanel)}
               className="h-8 px-3 rounded-lg bg-slate-800 border border-slate-700 flex items-center gap-2 text-gray-300 font-medium text-xs cursor-pointer hover:bg-slate-700 transition-colors"
@@ -805,13 +812,14 @@ try {
         </div>
       </header>
 
-      <div className="relative z-40 flex h-[calc(100vh-3.5rem)]">
+      {/* Main content area - starts below header */}
+      <div className="relative z-40 flex h-screen pt-14">
         
-        {/* Left sidebar - Layers */}
-        <aside className="w-56 bg-slate-900/95 backdrop-blur-sm border-r border-slate-800 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            
-            {hasQueried && availableLayers.length > 0 && (
+        {/* Left sidebar - Layers (ONLY SHOW AFTER QUERY) */}
+        {hasQueried && availableLayers.length > 0 && (
+          <aside className="w-56 bg-slate-900/95 backdrop-blur-sm border-r border-slate-800 flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              
               <div>
                 <h3 className="text-[11px] font-semibold text-gray-400 mb-2.5 uppercase tracking-wider">
                   Data Layers
@@ -920,7 +928,8 @@ try {
                       </div>
                     </label>
                   )}
-                  {/*  NEW: Boundary toggle */}
+                 
+                  {/*  Boundary toggle */}
                   {showBoundary && (
                     <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border bg-slate-800 border-slate-700`}>
                       <input 
@@ -938,36 +947,36 @@ try {
                   )}
                 </div>
               </div>
-            )}
 
-            {/* 🟢 NEW: Driver legend */}
-            {availableLayers.includes('drivers') && visibleLayers.drivers && driverLayerData && (
-              <div className="mt-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
-                <h3 className="text-xs font-semibold mb-2.5 text-gray-200">Deforestation Drivers</h3>
-                <div className="space-y-1.5">
-                  {Object.entries(driverLayerData.driver_categories).map(([id, category]) => (
-                    <div key={id} className="flex items-start gap-1.5 text-[10px]">
-                      <div 
-                        className="w-3 h-3 rounded flex-shrink-0 mt-0.5" 
-                        style={{ backgroundColor: category.color }}
-                      />
-                      <div className="flex-1">
-                        <div className="text-gray-200 font-medium leading-tight">{category.name}</div>
+              {/*   Driver legend */}
+              {availableLayers.includes('drivers') && visibleLayers.drivers && driverLayerData && (
+                <div className="mt-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                  <h3 className="text-xs font-semibold mb-2.5 text-gray-200">Deforestation Drivers</h3>
+                  <div className="space-y-1.5">
+                    {Object.entries(driverLayerData.driver_categories).map(([id, category]) => (
+                      <div key={id} className="flex items-start gap-1.5 text-[10px]">
+                        <div 
+                          className="w-3 h-3 rounded flex-shrink-0 mt-0.5" 
+                          style={{ backgroundColor: category.color }}
+                        />
+                        <div className="flex-1">
+                          <div className="text-gray-200 font-medium leading-tight">{category.name}</div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                  <div className="mt-2.5 pt-2.5 border-t border-slate-700">
+                    <p className="text-[9px] text-gray-500">
+                      Source: {driverLayerData.dataset_info.source}
+                    </p>
+                  </div>
                 </div>
-                <div className="mt-2.5 pt-2.5 border-t border-slate-700">
-                  <p className="text-[9px] text-gray-500">
-                    Source: {driverLayerData.dataset_info.source}
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        </aside>
+              )}
+            </div>
+          </aside>
+        )}
 
-        {/* Map container */}
+        {/* Map container - Full height, extends to top */}
         <div className="flex-1 relative bg-slate-950">
           <div 
             ref={mapContainer} 
@@ -1286,8 +1295,8 @@ try {
 </div>
 
 
-      {/* Chat interface */}
-      <div className={`absolute ${isChatExpanded ? 'bottom-0 left-1/2 -translate-x-1/2' : 'bottom-5 left-1/2 -translate-x-1/2'} z-50 w-full max-w-3xl px-4 transition-all duration-300`}>
+      {/* Chat interface - NARROWER WIDTH, NO SUGGESTIONS */}
+      <div className={`absolute ${isChatExpanded ? 'bottom-0 left-1/2 -translate-x-1/2' : 'bottom-5 left-1/2 -translate-x-1/2'} z-50 w-full max-w-xl px-4 transition-all duration-300`}>
         <div className={`bg-slate-900/95 backdrop-blur-sm ${isChatExpanded ? 'rounded-t-xl' : 'rounded-xl'} shadow-2xl border border-slate-800 overflow-hidden`}>
           
           {isChatExpanded && chatMessages.length > 0 && (
@@ -1330,7 +1339,7 @@ try {
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleSendQuery()}
                 onFocus={() => setIsChatExpanded(true)}
-                placeholder="Ask AI: 'Show deforestation in Brazil' or 'What are the drivers?'" 
+                placeholder="Ask about deforestation, fires, or drivers..." 
                 className="flex-1 h-10 px-3.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all"
                 disabled={isLoadingQuery}
               />
@@ -1358,19 +1367,7 @@ try {
               </button>
             </div>
 
-            {(!isChatExpanded || chatMessages.length === 0) && (
-              <div className="mt-2.5 flex flex-wrap gap-2">
-                <button onClick={() => { setChatInput("Show deforestation in Brazil"); setIsChatExpanded(true); }} className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors border border-slate-700 text-gray-400">
-                  🇧🇷 Brazil
-                </button>
-                <button onClick={() => { setChatInput("Show deforestation in Indonesia"); setIsChatExpanded(true); }} className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors border border-slate-700 text-gray-400">
-                  🇮🇩 Indonesia
-                </button>
-                <button onClick={() => { setChatInput("What are the drivers?"); setIsChatExpanded(true); }} className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors border border-slate-700 text-gray-400">
-                  🔍 Drivers
-                </button>
-              </div>
-            )}
+            {/* REMOVED: Suggestion buttons are no longer rendered */}
           </div>
         </div>
       </div>
