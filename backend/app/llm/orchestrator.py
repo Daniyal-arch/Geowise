@@ -1,10 +1,10 @@
-"""LLM Orchestrator - Main AI Controller"""
+"""LLM Orchestrator - Main AI Controller (v5.2 - Fixed)"""
 
 from typing import Dict, Any, Optional
 from datetime import date, datetime
 import pandas as pd
 from scipy.stats import pearsonr
-
+from app.services.flood_service import flood_service, FloodDetectionConfig
 from app.llm.agents import QueryAgent, AnalysisAgent, ReportAgent
 from app.llm.rag import vector_store
 from app.database import get_db, database_manager
@@ -24,20 +24,11 @@ class LLMOrchestrator:
     """
     Main AI orchestrator that coordinates all agents
     
-    Flow:
-    1. User query → QueryAgent (parse intent & parameters)
-    2. Parameters → AnalysisAgent (plan analysis)
-    3. Execute analysis (fetch data, run correlations)
-    4. Results → ReportAgent (generate insights)
-    5. Return to user
-    
-    ENHANCEMENTS:
-    - Monthly fire breakdown queries
-    - High FRP fire identification
-    - Real statistical correlation analysis (not AI-invented)
-    - Historical climate data integration
-    - GFW tree cover loss analysis (all causes, not just deforestation)
-    - H3 spatial fire-forest correlation with MPC integration
+    v5.2 ENHANCEMENTS:
+    - Optimized flood detection (~5-8 sec vs ~15-20 sec)
+    - On-demand flood statistics (population, cropland)
+    - On-demand optical imagery (Sentinel-2)
+    - Follow-up request detection for "show statistics" / "show optical"
     """
     
     def __init__(self):
@@ -48,11 +39,39 @@ class LLMOrchestrator:
         self.forest_monitor = ForestMonitor()
         self.climate_monitor = ClimateMonitor()
         self.climate_service = ClimateService()
+        
+        # v5.2: Track last flood result for follow-up requests
+        self._last_flood_result: Optional[Dict] = None
     
     async def process_query(self, user_query: str) -> Dict[str, Any]:
         """Process natural language query end-to-end"""
         
         logger.info(f"Processing query: {user_query}")
+        
+        # v5.2: Convert to lowercase for trigger detection
+        query_lower = user_query.lower()
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # v5.2: CHECK FOR FLOOD FOLLOW-UP REQUESTS FIRST
+        # ─────────────────────────────────────────────────────────────────────
+        
+        if self._is_statistics_request(query_lower):
+            result = await self._query_flood_statistics()
+            if result.get("status") != "error":
+                report = await self.report_agent.generate_report(result)
+                result["report"] = report
+            return result
+        
+        if self._is_optical_request(query_lower):
+            result = await self._query_flood_optical()
+            if result.get("status") != "error":
+                report = await self.report_agent.generate_report(result)
+                result["report"] = report
+            return result
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # STANDARD QUERY PARSING
+        # ─────────────────────────────────────────────────────────────────────
         
         parsed = await self.query_agent.parse_query(user_query)
         
@@ -65,8 +84,12 @@ class LLMOrchestrator:
         
         intent = parsed.get("intent")
         parameters = parsed.get("parameters", {})
-        show_drivers = parsed.get("show_drivers", False)  #  NEW
+        show_drivers = parsed.get("show_drivers", False)
         logger.info(f"Intent: {intent}, Parameters: {parameters}, Show Drivers: {show_drivers}")
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # ROUTE TO APPROPRIATE HANDLER
+        # ─────────────────────────────────────────────────────────────────────
         
         if intent == "query_fires":
             result = await self._query_fires(parameters)
@@ -100,14 +123,22 @@ class LLMOrchestrator:
         elif intent == "query_forest":
             country = parameters.get("country_iso")
             result = await self._query_forest_loss(country)
-        elif intent == "query_drivers":  # Driver visualization query
+            
+        elif intent == "query_drivers":
             country = parameters.get("country_iso")
             result = await self._query_forest_drivers(country)
-            # show_drivers is already set inside data by _query_forest_drivers
-        elif intent == "query_fires_realtime":  # 🔥 NEW: Real-time fire detection
+            
+        elif intent == "query_fires_realtime":
             country = parameters.get("country_iso")
-            days = parameters.get("days", 2)  # Default 2 days
+            days = parameters.get("days", 2)
             result = await self._query_fires_realtime(country, days)
+            
+        elif intent == "query_floods":
+            result = await self._query_floods(parameters)
+            # v5.2: Store result for follow-up requests
+            if result.get("status") == "success":
+                self._last_flood_result = result
+                
         elif intent == "generate_report":
             result = await self._generate_report(parameters)
 
@@ -115,7 +146,6 @@ class LLMOrchestrator:
             result = {"status": "error", "message": f"Unknown intent: {intent}"}
         
         if show_drivers and result.get("status") != "error":
-            # Ensure show_drivers is inside the data object
             if "data" in result:
                 result["data"]["show_drivers"] = True
 
@@ -124,6 +154,403 @@ class LLMOrchestrator:
             result["report"] = report
 
         return result
+    
+    # =========================================================================
+    # v5.2: FLOOD FOLLOW-UP DETECTION (PROPERLY INDENTED AS CLASS METHODS)
+    # =========================================================================
+    
+    def _is_statistics_request(self, query: str) -> bool:
+        """Check if user is requesting detailed flood statistics."""
+        triggers = [
+            'show statistics',
+            'show stats',
+            'show population',
+            'population impact',
+            'show impact',
+            'how many people',
+            'affected population',
+            'cropland impact',
+            'urban impact',
+            'detailed statistics',
+            'get statistics',
+            'calculate population',
+            'population exposed'
+        ]
+        return any(trigger in query for trigger in triggers)
+    
+    def _is_optical_request(self, query: str) -> bool:
+        """Check if user is requesting optical imagery."""
+        triggers = [
+            'show optical',
+            'optical imagery',
+            'satellite imagery',
+            'before and after',
+            'show rgb',
+            'show ndwi',
+            'see optical',
+            'get optical',
+            'display optical',
+            'true color',
+            'false color',
+            'sentinel-2',
+            'sentinel 2',
+            'show satellite',
+            'satellite image',
+            'optical image'
+        ]
+        return any(trigger in query for trigger in triggers)
+    
+    # =========================================================================
+    # v5.2: ON-DEMAND FLOOD STATISTICS
+    # =========================================================================
+    
+    async def _query_flood_statistics(self) -> Dict[str, Any]:
+        """
+        Get detailed flood statistics ON-DEMAND.
+        
+        Called when user says: "show statistics", "show population impact", etc.
+        """
+        
+        # Check if we have a previous flood query
+        if not self._last_flood_result:
+            return {
+                "status": "error",
+                "message": "No previous flood query found. Please run a flood detection first.",
+                "suggestion": "Try: 'Show floods in Dadu district August 2022'"
+            }
+        
+        logger.info("📊 Fetching detailed statistics (on-demand)...")
+        
+        try:
+            result = flood_service.get_detailed_statistics()
+            
+            if not result.get('success'):
+                return {
+                    "status": "error",
+                    "message": result.get('error', 'Statistics calculation failed')
+                }
+            
+            stats = result.get('statistics', {})
+            location_name = self._last_flood_result.get('data', {}).get('location_name', 'the area')
+            
+            return {
+                "status": "success",
+                "intent": "flood_statistics",
+                "data": {
+                    "statistics": stats,
+                    "location_name": location_name,
+                    "exposed_population": stats.get('exposed_population', 0),
+                    "flooded_cropland_ha": stats.get('flooded_cropland_ha', 0),
+                    "flooded_urban_ha": stats.get('flooded_urban_ha', 0)
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Statistics query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"Failed to calculate statistics: {str(e)}"
+            }
+    
+    # =========================================================================
+    # v5.2: ON-DEMAND OPTICAL IMAGERY
+    # =========================================================================
+    
+    async def _query_flood_optical(self) -> Dict[str, Any]:
+        """
+        Get optical imagery tiles ON-DEMAND.
+        
+        Called when user says: "show optical", "show satellite imagery", etc.
+        """
+        
+        # Check if we have a previous flood query
+        if not self._last_flood_result:
+            return {
+                "status": "error",
+                "message": "No previous flood query found. Please run a flood detection first.",
+                "suggestion": "Try: 'Show floods in Dadu district August 2022'"
+            }
+        
+        # Check if optical was available
+        optical_avail = self._last_flood_result.get('data', {}).get('optical_availability', {})
+        
+        if not optical_avail.get('available'):
+            return {
+                "status": "error",
+                "message": optical_avail.get('message', 'No cloud-free optical imagery available.'),
+                "suggestion": "The SAR flood detection is still valid and accurate."
+            }
+        
+        logger.info("🛰️ Generating optical imagery tiles (on-demand)...")
+        
+        try:
+            result = flood_service.get_optical_tiles(
+                include_ndwi=True,
+                include_false_color=True
+            )
+            
+            if not result.get('success'):
+                return {
+                    "status": "error",
+                    "message": result.get('error', 'Optical tile generation failed')
+                }
+            
+            tiles = result.get('tiles', {})
+            location_name = self._last_flood_result.get('data', {}).get('location_name', 'the area')
+            
+            return {
+                "status": "success",
+                "intent": "flood_optical",
+                "data": {
+                    "tiles": tiles,
+                    "location_name": location_name,
+                    "layer_descriptions": result.get('layer_descriptions', {}),
+                    "show_optical": True
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Optical query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"Failed to generate optical tiles: {str(e)}"
+            }
+    
+    # =========================================================================
+    # v5.2: OPTIMIZED FLOOD DETECTION
+    # =========================================================================
+    
+    async def _query_floods(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Query flood detection using SAR change detection (v5.2 OPTIMIZED).
+        
+        FAST response (~5-8 sec) includes:
+        - Flood extent tiles
+        - Flood area (km²)
+        - Optical availability
+        
+        Does NOT include by default (on-demand):
+        - Population → "show statistics"
+        - Cropland/Urban → "show statistics"  
+        - Optical imagery → "show optical"
+        """
+        
+        # Extract parameters
+        location_name = parameters.get("location_name")
+        location_type = parameters.get("location_type")
+        country = parameters.get("country")
+        buffer_km = parameters.get("buffer_km")
+        bbox = parameters.get("bbox")
+        coordinates = parameters.get("coordinates")
+        
+        before_start = parameters.get("before_start")
+        before_end = parameters.get("before_end")
+        after_start = parameters.get("after_start")
+        after_end = parameters.get("after_end")
+        
+        logger.info(f"🌊 Flood query: {location_name} ({location_type}) | {country}")
+        logger.info(f"   Dates: {before_start} to {before_end} → {after_start} to {after_end}")
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # VALIDATION
+        # ─────────────────────────────────────────────────────────────────────
+        
+        if not (location_name or bbox or coordinates):
+            return {
+                "status": "error",
+                "message": "Please specify a location for flood detection.",
+                "suggestion": "Try: 'Show floods in Dadu district August 2022'"
+            }
+        
+        if not (before_start and before_end and after_start and after_end):
+            return {
+                "status": "error",
+                "message": "Please specify the flood time period.",
+                "suggestion": "Include dates like 'August 2022' or 'monsoon 2022'"
+            }
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # INFER LOCATION TYPE
+        # ─────────────────────────────────────────────────────────────────────
+        
+        if not location_type and location_name:
+            name_lower = location_name.lower()
+            
+            if any(kw in name_lower for kw in ["river", "nadi", "ganga", "indus"]):
+                location_type = "river"
+                buffer_km = buffer_km or 25
+            elif name_lower in ["pakistan", "india", "bangladesh", "sri lanka", "nepal",
+                               "thailand", "vietnam", "indonesia", "philippines", "brazil"]:
+                location_type = "country"
+            elif any(kw in name_lower for kw in ["sindh", "punjab", "balochistan", "kerala",
+                                                 "bihar", "assam", "sylhet", "chittagong"]):
+                location_type = "province"
+            else:
+                location_type = "district"
+            
+            logger.info(f"   Inferred type: {location_type}")
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # CALL FLOOD SERVICE
+        # ─────────────────────────────────────────────────────────────────────
+        
+        try:
+            result = await flood_service.detect_flood(
+                location_name=location_name,
+                location_type=location_type,
+                country=country,
+                buffer_km=buffer_km,
+                bbox=bbox,
+                coordinates=coordinates,
+                before_start=before_start,
+                before_end=before_end,
+                after_start=after_start,
+                after_end=after_end
+            )
+            
+            if not result.get("success"):
+                return {
+                    "status": "error",
+                    "message": result.get("error", "Flood detection failed"),
+                    "suggestion": result.get("suggestion", "Try a different location or date range")
+                }
+            
+            # ─────────────────────────────────────────────────────────────────
+            # BUILD RESPONSE
+            # ─────────────────────────────────────────────────────────────────
+            
+            response_level = result.get("level", "detailed")
+            location_info = result.get("location", {})
+            tiles = result.get("tiles", {})
+            stats = result.get("statistics", {})
+            optical = result.get("optical_availability", {})
+            
+            logger.info(f"🌊 Response level: {response_level}")
+            
+            # Base response data
+            response_data = {
+                # Location
+                "location_name": location_info.get("name", location_name),
+                "location_type": location_info.get("type", location_type),
+                "country": location_info.get("country", country),
+                "province": location_info.get("province"),
+                "district": location_info.get("district"),
+                "admin_level": location_info.get("admin_level"),
+                "area_km2": result.get("area_km2"),
+                
+                # Map
+                "center": result.get("center"),
+                "zoom": result.get("zoom"),
+                
+                # Tiles
+                "tiles": {
+                    "flood_extent": tiles.get("flood_extent"),
+                    "change_detection": tiles.get("change_detection"),
+                    "sar_before": tiles.get("sar_before"),
+                    "sar_after": tiles.get("sar_after"),
+                    "permanent_water": tiles.get("permanent_water")
+                },
+                
+                # Show flood layer
+                "show_flood": True,
+                
+                # Dates
+                "dates": result.get("dates"),
+                "images_used": result.get("images_used"),
+                
+                # Config
+                "config": result.get("config"),
+                
+                # v5.2: Optical availability
+                "optical_availability": optical,
+                
+                "generated_at": result.get("generated_at")
+            }
+            
+            # ─────────────────────────────────────────────────────────────────
+            # OVERVIEW (Large Area)
+            # ─────────────────────────────────────────────────────────────────
+            
+            if response_level == "overview":
+                suggestion = result.get("suggestion", {})
+                sub_regions = suggestion.get("sub_regions", [])
+                
+                logger.info(f"🌊 Large area - suggesting {len(sub_regions)} sub-regions")
+                
+                response_data["statistics"] = None
+                response_data["suggestion"] = suggestion
+                response_data["detailed_stats_available"] = False
+                
+                return {
+                    "status": "success",
+                    "intent": "query_floods",
+                    "level": "overview",
+                    "data": response_data,
+                    "ai_guidance": {
+                        "is_large_area": True,
+                        "stats_available": False,
+                        "sub_regions": [r["name"] for r in sub_regions[:5]],
+                        "next_level": suggestion.get("next_level_type", "district"),
+                        "user_message": suggestion.get("message")
+                    }
+                }
+            
+            # ─────────────────────────────────────────────────────────────────
+            # DETAILED (Small Area)
+            # ─────────────────────────────────────────────────────────────────
+            
+            logger.info(f"🌊 Detailed: {stats.get('flood_area_km2', 0):.2f} km²")
+            
+            # v5.2: Only flood_area by default (no population/cropland)
+            response_data["statistics"] = {
+                "flood_area_km2": stats.get("flood_area_km2", 0),
+                "flood_area_ha": stats.get("flood_area_ha", 0)
+            }
+            response_data["detailed_stats_available"] = True
+            response_data["suggestion"] = None
+            
+            # Build AI guidance with follow-up hints
+            follow_up_hints = []
+            
+            if stats.get("flood_area_km2", 0) > 0:
+                follow_up_hints.append(f"Flood area: {stats['flood_area_km2']:.2f} km²")
+            
+            if optical.get("available"):
+                follow_up_hints.append("Cloud-free optical imagery available. Say 'show optical' to view.")
+            
+            follow_up_hints.append("Say 'show statistics' for population and cropland impact.")
+            
+            return {
+                "status": "success",
+                "intent": "query_floods",
+                "level": "detailed",
+                "data": response_data,
+                "ai_guidance": {
+                    "is_large_area": False,
+                    "stats_available": True,
+                    "flood_area_km2": stats.get("flood_area_km2", 0),
+                    "optical_available": optical.get("available", False),
+                    "follow_up_hints": follow_up_hints
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"🌊 Flood query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"Flood detection failed: {str(e)}",
+                "suggestion": "Try a smaller area or check date ranges"
+            }
+    
+    # =========================================================================
+    # FIRE QUERIES
+    # =========================================================================
     
     async def _query_fires(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Query fire data based on parameters"""
@@ -494,6 +921,10 @@ class LLMOrchestrator:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    # =========================================================================
+    # CORRELATION ANALYSIS
+    # =========================================================================
+    
     async def _analyze_historical_correlation(self, country_iso: str, year: int) -> Dict[str, Any]:
         """Analyze correlation between fires and climate using real statistics"""
         
@@ -671,327 +1102,6 @@ class LLMOrchestrator:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
 
-    async def _query_forest_loss(self, country_iso: str) -> Dict[str, Any]:
-        """
-        Query yearly forest loss data from Global Forest Watch
-        
-        ENHANCED: Now includes driver breakdown for dashboard visualization
-        """
-        
-        if not country_iso:
-            return {"status": "error", "message": "Country code required"}
-        
-        try:
-            logger.info(f"Querying forest loss for {country_iso}")
-            
-            forest_stats = self.forest_monitor.get_country_forest_stats(country_iso)
-            
-            if not forest_stats or not forest_stats.get("tree_cover_loss"):
-                return {
-                    "status": "error",
-                    "message": f"No forest data available for {country_iso}"
-                }
-            
-            # 🟢 SOLUTION 1: Pass pre-fetched stats to avoid duplicate API call
-            trend_analysis = self.forest_monitor.analyze_deforestation_trend(
-                country_iso,
-                forest_stats=forest_stats  # ✅ Pass the already-fetched data
-            )
-            
-            tree_loss = forest_stats["tree_cover_loss"]
-            yearly_data = tree_loss["yearly_data"]
-            
-            formatted_yearly = [
-                {
-                    "year": int(item["year"]),
-                    "loss_ha": round(float(item["loss_ha"]), 2)
-                }
-                for item in yearly_data
-            ]
-            
-            recent_5_years = formatted_yearly[-5:]
-            early_5_years = formatted_yearly[:5]
-            
-            recent_avg = sum(y["loss_ha"] for y in recent_5_years) / len(recent_5_years)
-            early_avg = sum(y["loss_ha"] for y in early_5_years) / len(early_5_years)
-            
-            logger.info(f"✅ Retrieved {len(formatted_yearly)} years of forest data")
-            
-            # ========================================
-            # Get driver tile URL for visualization
-            # ========================================
-            import httpx
-            
-            tile_url = None
-            try:
-                # CORRECT PATH: /api/v1/tiles/ (not /api/v1/gee/tiles/)
-                api_url = f"http://localhost:8000/api/v1/tiles/{country_iso}/drivers"
-                
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(api_url, timeout=30.0)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    tile_url = data.get("tile_url")
-                    if tile_url:
-                        logger.info(f"✅ Got driver tile URL: {tile_url[:50]}...")
-                    else:
-                        logger.warning(f"No tile_url in response")
-                else:
-                    logger.warning(f"Tiles API error: {response.status_code}")
-            except Exception as e:
-                logger.warning(f"Could not get tile URL: {e}")
-            
-            # ========================================
-            # NEW: Fetch driver breakdown for stats
-            # ========================================
-            driver_data = None
-            try:
-                driver_data = self.forest_monitor.get_yearly_tree_loss_by_driver(country_iso, tree_loss["recent_year"], tree_loss["recent_year"])
-            except Exception as e:
-                logger.warning(f"Could not get driver data: {e}")
-            
-            # Extract drivers if available
-            driver_breakdown = driver_data['yearly_data'][0]['drivers'] if driver_data and driver_data.get('yearly_data') else None
-            
-            if driver_breakdown:
-                logger.info(f"✅ Driver data retrieved: {len(driver_breakdown)} categories")
-            else:
-                logger.warning(f"No driver data available for {country_iso}")
-            # ========================================
-            
-            return {
-                "status": "success",
-                "intent": "query_forest",
-                "data": {
-                    "country": country_iso,
-                    "country_name": forest_stats.get("country_name"),
-                    "summary": {
-                        "total_loss_ha": round(tree_loss["total_loss_ha"], 2),
-                        "years_available": tree_loss["years_available"],
-                        "data_range": tree_loss["data_range"],
-                        "recent_year": tree_loss["recent_year"],
-                        "recent_loss_ha": round(tree_loss["recent_loss_ha"], 2)
-                    },
-                    "yearly_data": formatted_yearly,
-                    "trend_analysis": {
-                        "trend": trend_analysis.get("trend"),
-                        "severity": trend_analysis.get("severity"),
-                        "change_percent": trend_analysis.get("change_percent"),
-                        "recent_avg_loss_ha": round(recent_avg, 2),
-                        "early_avg_loss_ha": round(early_avg, 2),
-                        "analysis_period": f"{early_5_years[0]['year']}-{recent_5_years[-1]['year']}"
-                    },
-                    "peak_loss_year": max(formatted_yearly, key=lambda x: x["loss_ha"]),
-                    "lowest_loss_year": min(formatted_yearly, key=lambda x: x["loss_ha"]),
-                    "driver_breakdown": driver_breakdown,
-                    "tile_url": tile_url,  # ✅ ADD TILE URL
-                    "show_drivers": tile_url is not None,  # ✅ ADD SHOW_DRIVERS FLAG
-                    "data_source": "global_forest_watch",
-                    "dataset": "GADM TCL Change (UMD Hansen)",
-                    "data_description": "Tree cover loss from all causes (fires, logging, agriculture, natural events)"
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Forest query failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"status": "error", "message": str(e)}
-    async def _analyze_fire_forest_spatial_h3(self, country_iso: str, year: int) -> Dict[str, Any]:
-        """
-        Analyze fire-forest correlation using H3 spatial classification with REAL MPC pixel data
-        
-        Uses strategic sampling of known forested regions with Microsoft Planetary Computer
-        """
-        if not country_iso or not year:
-            return {"status": "error", "message": "Country and year required"}
-        
-        try:
-            logger.info(f"H3 spatial correlation with MPC: {country_iso} {year}")
-            
-            from app.services.mpc_service import MPCService
-            from app.core.spatial import fires_to_h3, classify_fires_by_h3, calculate_correlation_strength, spatial_ops
-            
-            # Step 1: Get fires from database
-            logger.info("Loading fires from database...")
-            async with database_manager.async_session_maker() as session:
-                result = await session.execute(
-                    text("""
-                        SELECT latitude, longitude, frp, brightness, confidence, acq_date
-                        FROM fire_detections
-                        WHERE country = :country
-                        AND strftime('%Y', acq_date) = :year
-                    """),
-                    {"country": country_iso, "year": str(year)}
-                )
-                fires_raw = result.fetchall()
-                await session.commit()
-            
-            if not fires_raw:
-                return {"status": "error", "message": f"No fire data found for {country_iso} in {year}"}
-            
-            fires = [
-                {
-                    'latitude': float(f[0]),
-                    'longitude': float(f[1]),
-                    'frp': float(f[2]) if f[2] else 0,
-                    'brightness': float(f[3]) if f[3] else 0,
-                    'confidence': f[4],
-                    'date': str(f[5])
-                }
-                for f in fires_raw
-            ]
-            
-            logger.info(f"Loaded {len(fires)} fires")
-            
-            # Step 2: Aggregate fires into H3 hexagons
-            logger.info("Aggregating fires into H3 hexagons...")
-            fire_hexagons = fires_to_h3(fires, resolution=7)
-            logger.info(f"Fires aggregated into {len(fire_hexagons)} H3 hexagons")
-            
-            # Step 3: Get REAL forest pixels from MPC using strategic regions
-            mpc_service = MPCService()
-            
-            forest_hexagons = {}
-            total_forest_pixels = 0
-            regions_queried = 0
-            regions_with_data = 0
-            
-            strategic_regions = mpc_service.get_strategic_regions(country_iso)
-            
-            if strategic_regions:
-                logger.info(f"Using {len(strategic_regions)} strategic forest regions for {country_iso}")
-                
-                for idx, region_bbox in enumerate(strategic_regions, 1):
-                    logger.info(f"Querying strategic region {idx}/{len(strategic_regions)}: {region_bbox}")
-                    regions_queried += 1
-                    
-                    try:
-                        forest_mask, forest_coords = mpc_service.get_forest_pixels_in_bbox(
-                            region_bbox,
-                            year,
-                            max_pixels=5000  # Limit per region for performance
-                        )
-                        
-                        if len(forest_coords) > 0:
-                            regions_with_data += 1
-                            total_forest_pixels += len(forest_coords)
-                            
-                            # Convert forest pixels to H3 hexagons
-                            for lat, lon in forest_coords:
-                                h3_idx = spatial_ops.lat_lon_to_h3(lat, lon, resolution=7)
-                                
-                                if h3_idx not in forest_hexagons:
-                                    forest_hexagons[h3_idx] = 0
-                                
-                                # Each pixel is ~10m x 10m = 100 m² = 0.00001 ha
-                                forest_hexagons[h3_idx] += 0.00001
-                            
-                            logger.info(f"Region {idx}: Found {len(forest_coords)} forest pixels → {len(set(spatial_ops.lat_lon_to_h3(lat, lon, resolution=7) for lat, lon in forest_coords))} hexagons")
-                        else:
-                            logger.info(f"Region {idx}: No forest pixels found")
-                    
-                    except Exception as e:
-                        logger.warning(f"Region {idx} failed: {e}")
-                        continue
-                
-                logger.info(f"MPC query complete: {regions_with_data}/{regions_queried} regions had data")
-                logger.info(f"Total forest pixels: {total_forest_pixels} in {len(forest_hexagons)} hexagons")
-            else:
-                logger.warning(f"No strategic regions defined for {country_iso}")
-            
-            # Step 4: Fallback to GFW if no MPC data
-            data_source = "Unknown"
-            
-            if not forest_hexagons or total_forest_pixels == 0:
-                logger.warning("No forest pixels found in MPC data, falling back to GFW statistics")
-                
-                forest_stats = self.forest_monitor.get_yearly_tree_loss(country_iso, year, year)
-                if forest_stats and forest_stats.get("yearly_data"):
-                    total_forest_loss_ha = float(forest_stats["yearly_data"][0]["loss_ha"])
-                    
-                    # Intelligent distribution: use fire locations as proxy for forest loss areas
-                    num_forest_hexagons = max(1, int(len(fire_hexagons) * 0.3))
-                    loss_per_hexagon = total_forest_loss_ha / num_forest_hexagons
-                    
-                    import random
-                    random.seed(year)
-                    sampled_hexagons = random.sample(
-                        list(fire_hexagons.keys()), 
-                        min(num_forest_hexagons, len(fire_hexagons))
-                    )
-                    
-                    for h3_idx in sampled_hexagons:
-                        forest_hexagons[h3_idx] = loss_per_hexagon
-                    
-                    data_source = "GFW statistics (MPC fallback)"
-                    logger.info(f"Distributed {total_forest_loss_ha:.2f} ha across {len(forest_hexagons)} hexagons")
-                else:
-                    logger.error("GFW fallback also failed")
-                    return {
-                        "status": "error",
-                        "message": "Unable to get forest data from MPC or GFW"
-                    }
-            else:
-                data_source = "Microsoft Planetary Computer (real pixels)"
-                logger.info(f"Using MPC data: {total_forest_pixels} pixels in {len(forest_hexagons)} hexagons")
-            
-            # Step 5: Spatial classification
-            logger.info("Classifying fires by forest hexagons...")
-            deforestation_hexagons, other_hexagons, stats = classify_fires_by_h3(
-                fire_hexagons, 
-                forest_hexagons
-            )
-            
-            # Step 6: Calculate correlation strength
-            correlation = calculate_correlation_strength(
-                stats['forest_loss']['fires_per_ha'],
-                stats['deforestation_fires']['percentage']
-            )
-            
-            # Step 7: Get GFW driver breakdown for additional context
-            driver_data = None
-            try:
-                driver_data = self.forest_monitor.get_yearly_tree_loss_by_driver(country_iso, year, year)
-            except Exception as e:
-                logger.warning(f"Could not get driver data: {e}")
-            
-            logger.info(f"✅ H3 classification complete: {stats['deforestation_fires']['count']} deforestation fires")
-            
-            return {
-                "status": "success",
-                "intent": "analyze_fire_forest_correlation",
-                "data": {
-                    "country": country_iso,
-                    "year": year,
-                    "fire_classification": stats,
-                    "correlation": correlation,
-                    "forest_loss": {
-                        "total_loss_ha": stats['forest_loss']['total_ha'],
-                        "data_source": data_source,
-                        "forest_pixels_analyzed": total_forest_pixels,
-                        "regions_queried": regions_queried if strategic_regions else 0,
-                        "regions_with_data": regions_with_data if strategic_regions else 0,
-                        "driver_breakdown": driver_data['yearly_data'][0]['drivers'] if driver_data and driver_data.get('yearly_data') else None
-                    },
-                    "h3_resolution": 7,
-                    "methodology": {
-                        "fire_aggregation": "H3 hexagons (resolution 7, ~5km cells)",
-                        "forest_data": data_source,
-                        "spatial_classification": "Real pixel-to-hexagon matching" if total_forest_pixels > 0 else "Statistical distribution",
-                        "sampling_strategy": f"{len(strategic_regions)} strategic forested regions" if strategic_regions else "No strategic sampling available",
-                        "data_quality": "High - Real MPC pixels" if total_forest_pixels > 0 else "Medium - GFW statistical distribution"
-                    }
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"H3 spatial correlation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"status": "error", "message": str(e)}
-
     async def _analyze_correlation(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Run correlation analysis with climate data (recent data, legacy method)"""
         
@@ -1082,6 +1192,401 @@ class LLMOrchestrator:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    # =========================================================================
+    # FOREST QUERIES
+    # =========================================================================
+    
+    async def _query_forest_loss(self, country_iso: str) -> Dict[str, Any]:
+        """Query yearly forest loss data from Global Forest Watch"""
+        
+        if not country_iso:
+            return {"status": "error", "message": "Country code required"}
+        
+        try:
+            logger.info(f"Querying forest loss for {country_iso}")
+            
+            forest_stats = self.forest_monitor.get_country_forest_stats(country_iso)
+            
+            if not forest_stats or not forest_stats.get("tree_cover_loss"):
+                return {
+                    "status": "error",
+                    "message": f"No forest data available for {country_iso}"
+                }
+            
+            trend_analysis = self.forest_monitor.analyze_deforestation_trend(
+                country_iso,
+                forest_stats=forest_stats
+            )
+            
+            tree_loss = forest_stats["tree_cover_loss"]
+            yearly_data = tree_loss["yearly_data"]
+            
+            formatted_yearly = [
+                {
+                    "year": int(item["year"]),
+                    "loss_ha": round(float(item["loss_ha"]), 2)
+                }
+                for item in yearly_data
+            ]
+            
+            recent_5_years = formatted_yearly[-5:]
+            early_5_years = formatted_yearly[:5]
+            
+            recent_avg = sum(y["loss_ha"] for y in recent_5_years) / len(recent_5_years)
+            early_avg = sum(y["loss_ha"] for y in early_5_years) / len(early_5_years)
+            
+            logger.info(f"✅ Retrieved {len(formatted_yearly)} years of forest data")
+            
+            # Get driver tile URL
+            import httpx
+            
+            tile_url = None
+            try:
+                api_url = f"http://localhost:8000/api/v1/tiles/{country_iso}/drivers"
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(api_url, timeout=30.0)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    tile_url = data.get("tile_url")
+                    if tile_url:
+                        logger.info(f"✅ Got driver tile URL: {tile_url[:50]}...")
+            except Exception as e:
+                logger.warning(f"Could not get tile URL: {e}")
+            
+            # Fetch driver breakdown
+            driver_data = None
+            try:
+                driver_data = self.forest_monitor.get_yearly_tree_loss_by_driver(
+                    country_iso, tree_loss["recent_year"], tree_loss["recent_year"]
+                )
+            except Exception as e:
+                logger.warning(f"Could not get driver data: {e}")
+            
+            driver_breakdown = driver_data['yearly_data'][0]['drivers'] if driver_data and driver_data.get('yearly_data') else None
+            
+            return {
+                "status": "success",
+                "intent": "query_forest",
+                "data": {
+                    "country": country_iso,
+                    "country_name": forest_stats.get("country_name"),
+                    "summary": {
+                        "total_loss_ha": round(tree_loss["total_loss_ha"], 2),
+                        "years_available": tree_loss["years_available"],
+                        "data_range": tree_loss["data_range"],
+                        "recent_year": tree_loss["recent_year"],
+                        "recent_loss_ha": round(tree_loss["recent_loss_ha"], 2)
+                    },
+                    "yearly_data": formatted_yearly,
+                    "trend_analysis": {
+                        "trend": trend_analysis.get("trend"),
+                        "severity": trend_analysis.get("severity"),
+                        "change_percent": trend_analysis.get("change_percent"),
+                        "recent_avg_loss_ha": round(recent_avg, 2),
+                        "early_avg_loss_ha": round(early_avg, 2),
+                        "analysis_period": f"{early_5_years[0]['year']}-{recent_5_years[-1]['year']}"
+                    },
+                    "peak_loss_year": max(formatted_yearly, key=lambda x: x["loss_ha"]),
+                    "lowest_loss_year": min(formatted_yearly, key=lambda x: x["loss_ha"]),
+                    "driver_breakdown": driver_breakdown,
+                    "tile_url": tile_url,
+                    "show_drivers": tile_url is not None,
+                    "data_source": "global_forest_watch",
+                    "dataset": "GADM TCL Change (UMD Hansen)",
+                    "data_description": "Tree cover loss from all causes"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Forest query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+    
+    async def _query_forest_drivers(self, country_iso: str) -> Dict[str, Any]:
+        """Query forest loss drivers - TILE VISUALIZATION ONLY"""
+        
+        if not country_iso:
+            return {"status": "error", "message": "Country code required"}
+        
+        try:
+            logger.info(f"Fetching driver tile URL for {country_iso}")
+            
+            import httpx
+            
+            api_url = f"http://localhost:8000/api/v1/tiles/{country_iso}/drivers"
+            
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(api_url, timeout=30.0)
+                    
+                if response.status_code == 200:
+                    data = response.json()
+                    tile_url = data.get("tile_url")
+                    
+                    if tile_url:
+                        logger.info(f"✅ Got driver tile URL for {country_iso}")
+                        
+                        return {
+                            "status": "success",
+                            "intent": "query_drivers",
+                            "data": {
+                                "country": country_iso,
+                                "tile_url": tile_url,
+                                "show_drivers": True,
+                                "driver_categories": data.get("driver_categories", {}),
+                                "note": "Driver layer ready for visualization"
+                            }
+                        }
+                    else:
+                        return {
+                            "status": "error",
+                            "message": "No tile URL in API response"
+                        }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Tiles API returned status {response.status_code}"
+                    }
+                    
+            except httpx.RequestError as e:
+                return {
+                    "status": "error",
+                    "message": f"Failed to fetch driver tiles: {str(e)}"
+                }
+            
+        except Exception as e:
+            logger.error(f"Driver query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+    
+    async def _analyze_fire_forest_spatial_h3(self, country_iso: str, year: int) -> Dict[str, Any]:
+        """Analyze fire-forest correlation using H3 spatial classification"""
+        
+        if not country_iso or not year:
+            return {"status": "error", "message": "Country and year required"}
+        
+        try:
+            logger.info(f"H3 spatial correlation with MPC: {country_iso} {year}")
+            
+            from app.services.mpc_service import MPCService
+            from app.core.spatial import fires_to_h3, classify_fires_by_h3, calculate_correlation_strength, spatial_ops
+            
+            # Get fires from database
+            async with database_manager.async_session_maker() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT latitude, longitude, frp, brightness, confidence, acq_date
+                        FROM fire_detections
+                        WHERE country = :country
+                        AND strftime('%Y', acq_date) = :year
+                    """),
+                    {"country": country_iso, "year": str(year)}
+                )
+                fires_raw = result.fetchall()
+                await session.commit()
+            
+            if not fires_raw:
+                return {"status": "error", "message": f"No fire data found for {country_iso} in {year}"}
+            
+            fires = [
+                {
+                    'latitude': float(f[0]),
+                    'longitude': float(f[1]),
+                    'frp': float(f[2]) if f[2] else 0,
+                    'brightness': float(f[3]) if f[3] else 0,
+                    'confidence': f[4],
+                    'date': str(f[5])
+                }
+                for f in fires_raw
+            ]
+            
+            logger.info(f"Loaded {len(fires)} fires")
+            
+            # Aggregate fires into H3 hexagons
+            fire_hexagons = fires_to_h3(fires, resolution=7)
+            logger.info(f"Fires aggregated into {len(fire_hexagons)} H3 hexagons")
+            
+            # Get forest pixels from MPC
+            mpc_service = MPCService()
+            
+            forest_hexagons = {}
+            total_forest_pixels = 0
+            regions_queried = 0
+            regions_with_data = 0
+            
+            strategic_regions = mpc_service.get_strategic_regions(country_iso)
+            
+            if strategic_regions:
+                logger.info(f"Using {len(strategic_regions)} strategic forest regions")
+                
+                for idx, region_bbox in enumerate(strategic_regions, 1):
+                    regions_queried += 1
+                    
+                    try:
+                        forest_mask, forest_coords = mpc_service.get_forest_pixels_in_bbox(
+                            region_bbox,
+                            year,
+                            max_pixels=5000
+                        )
+                        
+                        if len(forest_coords) > 0:
+                            regions_with_data += 1
+                            total_forest_pixels += len(forest_coords)
+                            
+                            for lat, lon in forest_coords:
+                                h3_idx = spatial_ops.lat_lon_to_h3(lat, lon, resolution=7)
+                                
+                                if h3_idx not in forest_hexagons:
+                                    forest_hexagons[h3_idx] = 0
+                                
+                                forest_hexagons[h3_idx] += 0.00001
+                    
+                    except Exception as e:
+                        logger.warning(f"Region {idx} failed: {e}")
+                        continue
+            
+            # Fallback to GFW if no MPC data
+            data_source = "Unknown"
+            
+            if not forest_hexagons or total_forest_pixels == 0:
+                logger.warning("No forest pixels found, falling back to GFW")
+                
+                forest_stats = self.forest_monitor.get_yearly_tree_loss(country_iso, year, year)
+                if forest_stats and forest_stats.get("yearly_data"):
+                    total_forest_loss_ha = float(forest_stats["yearly_data"][0]["loss_ha"])
+                    
+                    num_forest_hexagons = max(1, int(len(fire_hexagons) * 0.3))
+                    loss_per_hexagon = total_forest_loss_ha / num_forest_hexagons
+                    
+                    import random
+                    random.seed(year)
+                    sampled_hexagons = random.sample(
+                        list(fire_hexagons.keys()), 
+                        min(num_forest_hexagons, len(fire_hexagons))
+                    )
+                    
+                    for h3_idx in sampled_hexagons:
+                        forest_hexagons[h3_idx] = loss_per_hexagon
+                    
+                    data_source = "GFW statistics (MPC fallback)"
+                else:
+                    return {
+                        "status": "error",
+                        "message": "Unable to get forest data from MPC or GFW"
+                    }
+            else:
+                data_source = "Microsoft Planetary Computer (real pixels)"
+            
+            # Spatial classification
+            deforestation_hexagons, other_hexagons, stats = classify_fires_by_h3(
+                fire_hexagons, 
+                forest_hexagons
+            )
+            
+            # Calculate correlation
+            correlation = calculate_correlation_strength(
+                stats['forest_loss']['fires_per_ha'],
+                stats['deforestation_fires']['percentage']
+            )
+            
+            # Get driver breakdown
+            driver_data = None
+            try:
+                driver_data = self.forest_monitor.get_yearly_tree_loss_by_driver(country_iso, year, year)
+            except:
+                pass
+            
+            return {
+                "status": "success",
+                "intent": "analyze_fire_forest_correlation",
+                "data": {
+                    "country": country_iso,
+                    "year": year,
+                    "fire_classification": stats,
+                    "correlation": correlation,
+                    "forest_loss": {
+                        "total_loss_ha": stats['forest_loss']['total_ha'],
+                        "data_source": data_source,
+                        "forest_pixels_analyzed": total_forest_pixels,
+                        "driver_breakdown": driver_data['yearly_data'][0]['drivers'] if driver_data and driver_data.get('yearly_data') else None
+                    },
+                    "h3_resolution": 7,
+                    "methodology": {
+                        "fire_aggregation": "H3 hexagons (resolution 7)",
+                        "forest_data": data_source
+                    }
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"H3 spatial correlation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+    
+    # =========================================================================
+    # REAL-TIME FIRES & REPORTS
+    # =========================================================================
+    
+    async def _query_fires_realtime(self, country_iso: str, days: int = 2) -> Dict[str, Any]:
+        """Query real-time fire detection from NASA FIRMS API"""
+        
+        if not country_iso:
+            return {"status": "error", "message": "Country code required"}
+        
+        try:
+            logger.info(f"🔥 Fetching real-time fires for {country_iso} (last {days} days)")
+            
+            import httpx
+            
+            api_url = f"http://localhost:8000/api/v1/fires/live/{country_iso}"
+            params = {"days": days}
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(api_url, params=params)
+            
+            if response.status_code != 200:
+                return {
+                    "status": "error",
+                    "message": f"Failed to fetch fire data (HTTP {response.status_code})"
+                }
+            
+            fire_data = response.json()
+            
+            if not fire_data.get("success"):
+                return {
+                    "status": "error",
+                    "message": fire_data.get("message", "Unknown error")
+                }
+            
+            fires = fire_data.get("fires", [])
+            statistics = fire_data.get("statistics", {})
+            
+            logger.info(f"✅ Retrieved {len(fires)} fires")
+            
+            return {
+                "status": "success",
+                "intent": "query_fires_realtime",
+                "data": {
+                    "country": country_iso,
+                    "days": days,
+                    "fire_count": len(fires),
+                    "fires": fires,
+                    "statistics": statistics,
+                    "data_source": "nasa_firms_nrt"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Real-time fire query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+    
     async def _generate_report(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive report"""
         
@@ -1095,10 +1600,9 @@ class LLMOrchestrator:
                 fires = await self.nasa_service.get_fires_by_country(country_iso, days=7)
             
             forest_stats = self.forest_monitor.get_country_forest_stats(country_iso)
-            # 🟢 SOLUTION 1: Pass pre-fetched stats to avoid duplicate API call
             forest_trend = self.forest_monitor.analyze_deforestation_trend(
                 country_iso,
-                forest_stats=forest_stats  # ✅ Pass pre-fetched stats
+                forest_stats=forest_stats
             )
             
             return {
@@ -1148,146 +1652,5 @@ class LLMOrchestrator:
         
         return response.choices[0].message.content
 
-    async def _query_forest_drivers(self, country_iso: str) -> Dict[str, Any]:
-        """
-        Query forest loss drivers - TILE VISUALIZATION ONLY
-        
-        This method is for the "show drivers" / "add drivers layer" queries.
-        It calls the tiles API endpoint to get the driver tile URL.
-        It does NOT fetch forest stats from GFW API.
-        """
-        if not country_iso:
-            return {"status": "error", "message": "Country code required"}
-        
-        try:
-            logger.info(f"Fetching driver tile URL for {country_iso}")
-            
-            # Call the tiles API endpoint for drivers
-            import httpx
-            
-            # CORRECT PATH: /api/v1/tiles/ (not /api/v1/gee/tiles/)
-            api_url = f"http://localhost:8000/api/v1/tiles/{country_iso}/drivers"
-            
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(api_url, timeout=30.0)
-                    
-                if response.status_code == 200:
-                    data = response.json()
-                    tile_url = data.get("tile_url")
-                    
-                    if tile_url:
-                        logger.info(f"✅ Got driver tile URL for {country_iso}")
-                        
-                        return {
-                            "status": "success",
-                            "intent": "query_drivers",
-                            "data": {
-                                "country": country_iso,
-                                "tile_url": tile_url,
-                                "show_drivers": True,
-                                "driver_categories": data.get("driver_categories", {}),
-                                "note": "Driver layer ready for visualization"
-                            }
-                        }
-                    else:
-                        logger.error(f"No tile_url in response: {data}")
-                        return {
-                            "status": "error",
-                            "message": "No tile URL in API response"
-                        }
-                else:
-                    logger.error(f"Tiles API error: {response.status_code} - {response.text}")
-                    return {
-                        "status": "error",
-                        "message": f"Tiles API returned status {response.status_code}"
-                    }
-                    
-            except httpx.RequestError as e:
-                logger.error(f"HTTP request failed: {e}")
-                return {
-                    "status": "error",
-                    "message": f"Failed to fetch driver tiles: {str(e)}"
-                }
-            
-        except Exception as e:
-            logger.error(f"Driver query failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"status": "error", "message": str(e)}
-    async def _query_fires_realtime(self, country_iso: str, days: int = 2) -> Dict[str, Any]:
-        """
-        Query real-time fire detection from NASA FIRMS API
-        
-        This method is specifically for the Fire Stats Panel visualization.
-        It fetches live fire data for the past N days.
-        
-        Args:
-            country_iso: ISO-3 country code (e.g., 'PAK', 'BRA')
-            days: Number of days to fetch (1-10, default 2)
-        
-        Returns:
-            Success response with fires array and statistics, or error
-        """
-        if not country_iso:
-            return {"status": "error", "message": "Country code required"}
-        
-        try:
-            logger.info(f"🔥 Fetching real-time fires for {country_iso} (last {days} days)")
-            
-            # Call the fires endpoint directly
-            import httpx
-            
-            api_url = f"http://localhost:8000/api/v1/fires/live/{country_iso}"
-            params = {"days": days}
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(api_url, params=params)
-            
-            if response.status_code != 200:
-                logger.error(f"Fires API error: {response.status_code}")
-                return {
-                    "status": "error",
-                    "message": f"Failed to fetch fire data (HTTP {response.status_code})"
-                }
-            
-            fire_data = response.json()
-            
-            if not fire_data.get("success"):
-                return {
-                    "status": "error",
-                    "message": fire_data.get("message", "Unknown error")
-                }
-            
-            fires = fire_data.get("fires", [])
-            statistics = fire_data.get("statistics", {})
-            
-            logger.info(f"✅ Retrieved {len(fires)} fires with statistics")
-            
-            return {
-                "status": "success",
-                "intent": "query_fires_realtime",
-                "data": {
-                    "country": country_iso,
-                    "days": days,
-                    "fire_count": len(fires),
-                    "fires": fires,  # Full fire array for map markers
-                    "statistics": statistics,  # Full stats for Fire Stats Panel
-                    "data_source": "nasa_firms_nrt",
-                    "note": "Real-time fire detection from VIIRS/MODIS satellites"
-                }
-            }
-            
-        except httpx.RequestError as e:
-            logger.error(f"HTTP request failed: {e}")
-            return {
-                "status": "error",
-                "message": f"Failed to fetch fire data: {str(e)}"
-            }
-        except Exception as e:
-            logger.error(f"Real-time fire query failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"status": "error", "message": str(e)}
 
 orchestrator = LLMOrchestrator()

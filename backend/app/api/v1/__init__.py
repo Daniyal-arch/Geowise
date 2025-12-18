@@ -5,9 +5,9 @@ from fastapi import APIRouter
 # Import with error handling
 try:
     from app.api.v1 import health, fires, analysis, forest, climate, tiles, query, mpc, api
-    print("✅ All route modules loaded (including MPC)")
+    print(" All route modules loaded (including MPC)")
 except ImportError as e:
-    print(f"❌ Import error: {e}")
+    print(f" Import error: {e}")
     raise
 
 api_router = APIRouter()
@@ -25,6 +25,12 @@ import logging
 
 # Import the GEE service
 from app.services.gee_service import gee_service
+
+from app.api.v1 import floods
+
+
+
+api_router.include_router(floods.router, prefix="/floods", tags=["Floods"])
 
 logger = logging.getLogger(__name__)
 

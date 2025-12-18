@@ -22,6 +22,27 @@ import {
 } from '@/services/datasets/hansenForest';
 import type { LayerVisibility, DriverTiles } from '@/types/gee'; 
 
+// ============================================================================
+// 🌊 FLOOD MODULE IMPORTS
+// ============================================================================
+import { FloodStatsPanel } from '@/components/FloodStatsPanel';
+import { FloodLayerControls } from '@/components/FloodLayerControls';
+import { 
+  addFloodLayers, 
+  removeFloodLayers, 
+  updateFloodLayerVisibility,
+  updateFloodLayerOpacity,
+  flyToFloodLocation,
+  addOpticalLayers 
+} from '@/utils/floodMapLayers';
+import type { 
+  FloodNLPResponse, 
+  FloodLayerState, 
+  FloodLayerOpacity,
+  FloodTiles 
+} from '@/types/flood';
+import { DEFAULT_FLOOD_LAYERS, DEFAULT_FLOOD_OPACITY } from '@/types/flood';
+
 export default function Dashboard() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -50,6 +71,14 @@ export default function Dashboard() {
   const [driverLayerData, setDriverLayerData] = useState<DriverTiles | null>(null);
   
   const [fireStats, setFireStats] = useState<FireStatistics | null>(null);
+
+  // ============================================================================
+  // 🌊 FLOOD STATE
+  // ============================================================================
+  const [floodData, setFloodData] = useState<FloodNLPResponse['data'] | null>(null);
+  const [floodLayers, setFloodLayers] = useState<FloodLayerState>(DEFAULT_FLOOD_LAYERS);
+  const [floodOpacity, setFloodOpacity] = useState<FloodLayerOpacity>(DEFAULT_FLOOD_OPACITY);
+
   // Helper: Flatten coordinates for bbox calculation
   const flattenCoordinates = (coords: any): number[][] => {
     if (!coords) return [];
@@ -94,6 +123,7 @@ export default function Dashboard() {
     percentage: number;
     pixel_count: number;
   }> | null>(null);
+  
 
   const basemapStyle = {
     version: 8,
@@ -157,6 +187,43 @@ export default function Dashboard() {
     });
   }, [visibleLayers, mapLoaded]);
 
+  // ============================================================================
+  // 🌊 FLOOD LAYER VISIBILITY EFFECT - v5.2 FIXED
+  // ============================================================================
+  useEffect(() => {
+    if (!map.current || !mapLoaded || !floodData?.tiles) return;
+
+    // Get all layer keys from floodLayers state
+    const allLayerKeys = Object.keys(floodLayers) as (keyof FloodLayerState)[];
+    
+    allLayerKeys.forEach((layerKey) => {
+      updateFloodLayerVisibility(
+        map.current!,
+        floodData.tiles,
+        layerKey,
+        floodLayers[layerKey],
+        floodOpacity[layerKey]
+      );
+    });
+  }, [floodLayers, floodOpacity, mapLoaded, floodData]);
+
+  // ============================================================================
+  // 🌊 FLOOD OPACITY EFFECT - v5.2 FIXED
+  // ============================================================================
+  useEffect(() => {
+    if (!map.current || !mapLoaded || !floodData?.tiles) return;
+
+    const allOpacityKeys = Object.keys(floodOpacity) as (keyof FloodLayerOpacity)[];
+    
+    allOpacityKeys.forEach((layerKey) => {
+      // Only update opacity if the layer is visible
+      const stateKey = layerKey as keyof FloodLayerState;
+      if (floodLayers[stateKey]) {
+        updateFloodLayerOpacity(map.current!, layerKey, floodOpacity[layerKey]);
+      }
+    });
+  }, [floodOpacity, floodLayers, mapLoaded, floodData]);
+
   const flyToCountry = (countryCode: string) => {
     if (!map.current || !mapLoaded) return;
     
@@ -174,9 +241,58 @@ export default function Dashboard() {
     
     setCurrentCountry(countryCode);
   };
+
+  // ============================================================================
+  // 🌊 FLOOD LAYER TOGGLE HANDLER
+  // ============================================================================
+  const handleToggleFloodLayer = (layer: keyof FloodLayerState) => {
+    setFloodLayers(prev => ({
+      ...prev,
+      [layer]: !prev[layer]
+    }));
+  };
+
+  // ============================================================================
+  // 🌊 FLOOD OPACITY CHANGE HANDLER
+  // ============================================================================
+  const handleFloodOpacityChange = (layer: keyof FloodLayerOpacity, value: number) => {
+    setFloodOpacity(prev => ({
+      ...prev,
+      [layer]: value
+    }));
+  };
+
+  // ============================================================================
+  // 🌊 CLEAR FLOOD DATA HELPER
+  // ============================================================================
+  const clearFloodData = () => {
+    if (map.current) {
+      removeFloodLayers(map.current);
+    }
+    setFloodData(null);
+    setFloodLayers(DEFAULT_FLOOD_LAYERS);
+    setFloodOpacity(DEFAULT_FLOOD_OPACITY);
+  };
+
+  // ============================================================================
+  // 🌊 FLOOD SUB-REGION CLICK HANDLER
+  // ============================================================================
+  const handleFloodSubRegionClick = (regionName: string, regionType: string) => {
+    console.log('[Dashboard] 🌊 Sub-region clicked:', regionName, regionType);
+    
+    // Get the current flood dates from floodData
+    const afterDate = floodData?.dates?.after?.start || '';
+    const yearMonth = afterDate ? afterDate.substring(0, 7).replace('-', ' ') : 'August 2022';
+    
+    // Build the new query
+    const newQuery = `Show floods in ${regionName} ${regionType} ${yearMonth}`;
+    
+    // Set chat input and expand chat
+    setChatInput(newQuery);
+    setIsChatExpanded(true);
+  };
+
   //  country boundary visualization
-  // ✅ SPOTLIGHT EFFECT: Darken world, brighten country
-// ✅ IMPROVED SPOTLIGHT: Subtle highlight, professional border
 const addCountryBoundary = async (countryCode: string) => {
   if (!map.current || !mapLoaded) return;
   
@@ -227,12 +343,10 @@ const addCountryBoundary = async (countryCode: string) => {
         source: GLOBAL_DARK_ID,
         paint: {
           'fill-color': '#000000',
-          'fill-opacity': 0.10  // ✨ SUBTLE: 10% darkness outside
+          'fill-opacity': 0.10
         }
       });
     }
-    
-    // ❌ REMOVED: Country brightness layer (no more white fill)
     
     // Layer 2: Sharp white border ONLY
     if (!map.current.getLayer(BOUNDARY_LINE_ID)) {
@@ -242,9 +356,9 @@ const addCountryBoundary = async (countryCode: string) => {
         source: BOUNDARY_SOURCE_ID,
         paint: {
           'line-color': '#FFFFFF',
-          'line-width': 2.0,      // ✨ Clean 2px border
-          'line-opacity': 0.85,   // ✨ Strong but not overpowering
-          'line-blur': 0.3        // ✨ Minimal blur for crispness
+          'line-width': 2.0,
+          'line-opacity': 0.85,
+          'line-blur': 0.3
         }
       });
     }
@@ -319,6 +433,7 @@ const removeCountryBoundary = () => {
       map.current.setLayoutProperty(BOUNDARY_LINE_ID, 'visibility', visibility);
     }
   };
+  
   // 🔥 Fire marker management
 const FIRE_SOURCE_ID = 'fires-source';
 const FIRE_LAYER_ID = 'fires-layer';
@@ -364,25 +479,23 @@ const addFireMarkers = (fires: any[]) => {
     type: 'circle',
     source: FIRE_SOURCE_ID,
     paint: {
-      // Small consistent radius (slightly increases with zoom for visibility)
       'circle-radius': [
         'interpolate',
         ['linear'],
         ['zoom'],
-        0, 1.5,   // Very small at world view
-        5, 2,     // Small at country view
-        8, 3,     // Medium-small at regional view
-        12, 4,    // Slightly larger at city view
-        16, 5     // Still small at street view
+        0, 1.5,
+        5, 2,
+        8, 3,
+        12, 4,
+        16, 5
       ],
-      // Color by confidence level (NASA FIRMS style)
       'circle-color': [
         'match',
         ['get', 'confidence'],
-        'h', '#FF0000',  // High - Bright Red
-        'n', '#FF6B00',  // Nominal - Orange-Red
-        'l', '#FFAA00',  // Low - Orange-Yellow
-        '#FF6B00'        // Default - Orange-Red
+        'h', '#FF0000',
+        'n', '#FF6B00',
+        'l', '#FFAA00',
+        '#FF6B00'
       ],
       'circle-opacity': 0.8,
       'circle-stroke-width': 0.5,
@@ -465,6 +578,7 @@ const addFireMarkers = (fires: any[]) => {
   
   console.log('[Fire] ✅ Fire markers added (FIRMS style)');
 };
+
 const removeFireMarkers = () => {
   if (!map.current) return;
   
@@ -489,300 +603,456 @@ const removeFireMarkers = () => {
 };
 
 
-
+  // ============================================================================
+  // 🎯 MAIN QUERY HANDLER - v5.2 WITH FLOOD FOLLOW-UP SUPPORT
+  // ============================================================================
   const handleSendQuery = async () => {
-  if (!chatInput.trim() || isLoadingQuery) return;
+    if (!chatInput.trim() || isLoadingQuery) return;
 
-  const userMessage = chatInput.trim();
-  setChatInput('');
-  setIsChatExpanded(true);
-  setHasQueried(true);
-  
-  const detectedCountry = detectCountryFromQuery(userMessage);
-  
-  //  If query asks about drivers/causes but doesn't mention country, add current country
-  let queryToSend = userMessage;
-  const driverKeywords = ['driver', 'cause', 'why', 'reason', 'show me drivers', 'what are the'];
-  const hasDriverIntent = driverKeywords.some(kw => userMessage.toLowerCase().includes(kw));
-  const hasCountryInQuery = /\b(brazil|indonesia|congo|pakistan|india|malaysia|peru|colombia|bolivia)\b/i.test(userMessage);
-  
-  if (hasDriverIntent && !hasCountryInQuery && currentCountry) {
-    const countryName = getCountryName(currentCountry);
-    queryToSend = `${userMessage} in ${countryName}`;
-    console.log('[Query] Enhanced query with country:', queryToSend);
-  }
-  
-  setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
-  setIsLoadingQuery(true);
-
-  try {
-    const response = await fetch('http://localhost:8000/api/v1/query/nl', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: queryToSend,
-        include_raw_data: true
-      })
-    });
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const apiResponse = await response.json();
-    console.log('[Query] API Response:', apiResponse);
-    console.log('[Query] Intent:', apiResponse.intent);
-
-    // ✅ DECLARE responseCountry FIRST (before using it)
-    const responseCountry = apiResponse.data?.country || detectedCountry || currentCountry;
+    const userMessage = chatInput.trim();
+    setChatInput('');
+    setIsChatExpanded(true);
+    setHasQueried(true);
     
-    // 🟢 Check if country changed
-    const countryChanged = responseCountry !== currentCountry;
-    console.log('[Query] Current country:', currentCountry, '| Response country:', responseCountry, '| Changed:', countryChanged);
+    const detectedCountry = detectCountryFromQuery(userMessage);
     
-    if (responseCountry && countryChanged) {
-      flyToCountry(responseCountry);
-      setCurrentCountry(responseCountry);
-    }
-
-    //  FIRE DETECTION (NOW responseCountry IS DECLARED)
-    const isFireQuery = apiResponse.intent === 'query_fires_realtime' || 
-                        /\b(fire|fires|burning|wildfire|blaze)\b/i.test(userMessage);
-
-    if (isFireQuery && responseCountry) {
-  console.log('[Dashboard] 🔥 Fire query detected, fetching live fire data...');
-  
-  try {
-    // ✅ REMOVE ALL FOREST LAYERS FIRST
-    if (map.current) {
-      removeHansenLayers(map.current);
-      if (hasDriverLayer(map.current)) {
-        removeDriverLayer(map.current);
-      }
+    // If query asks about drivers/causes but doesn't mention country, add current country
+    let queryToSend = userMessage;
+    const driverKeywords = ['driver', 'cause', 'why', 'reason', 'show me drivers', 'what are the'];
+    const hasDriverIntent = driverKeywords.some(kw => userMessage.toLowerCase().includes(kw));
+    const hasCountryInQuery = /\b(brazil|indonesia|congo|pakistan|india|malaysia|peru|colombia|bolivia)\b/i.test(userMessage);
+    
+    if (hasDriverIntent && !hasCountryInQuery && currentCountry) {
+      const countryName = getCountryName(currentCountry);
+      queryToSend = `${userMessage} in ${countryName}`;
+      console.log('[Query] Enhanced query with country:', queryToSend);
     }
     
-    const fireData = await getLiveFireDetections(responseCountry, 2);
-    
-    console.log('[Dashboard] Fire data received:', fireData);
-    
-    if (fireData.success) {
-      // Set fire statistics
-      setFireStats(fireData.statistics);
-      
-      // Add fire markers to map
-      if (fireData.fires.length > 0) {
-        addFireMarkers(fireData.fires);
-      }
-      
-      // ✅ SET ONLY FIRES LAYER (not adding to existing)
-      setAvailableLayers(['fires']);
-      
-      // ✅ CLEAR FOREST STATS AND DRIVER DATA
-      setForestStats(null);
-      setDriverBreakdown(null);
-      setDriverLayerData(null);
-      
-      // ✅ UPDATE VISIBILITY STATE
-      setVisibleLayers({
-        baseline: false,
-        loss: false,
-        gain: false,
-        drivers: false
+    setChatMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    setIsLoadingQuery(true);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/query/nl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: queryToSend,
+          include_raw_data: true
+        })
       });
-      
-      // Add country boundary
-      await addCountryBoundary(responseCountry);
-      
-      console.log('[Dashboard] ✅ Fire data loaded successfully');
-      
-      // ✅ ADD AI RESPONSE TO CHAT BEFORE EXITING
-      const aiResponse = apiResponse.report || apiResponse.answer || 'Fire data loaded successfully';
-      setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
-      
-      // ✅ NOW EXIT (skip forest/driver layer loading)
-      setIsLoadingQuery(false);
-      return;
-    }
-  } catch (fireError) {
-    console.error('[Dashboard] ❌ Fire data error:', fireError);
-  }
-}
 
-// ========================================
-// ✅ PROPER LAYER LOADING LOGIC (FOR FOREST/DRIVER ONLY)
-// ========================================
-try {
-  if (map.current && mapLoaded) {
-      console.log('[Dashboard] Loading GEE tiles for:', responseCountry);
-      console.log('[Dashboard] Intent:', apiResponse.intent);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const apiResponse = await response.json();
+      console.log('[Query] API Response:', apiResponse);
+      console.log('[Query] Intent:', apiResponse.intent);
+
+      // ========================================================================
+      // 🌊 v5.2: HANDLE FLOOD FOLLOW-UP INTENTS FIRST (BEFORE ANYTHING ELSE)
+      // ========================================================================
       
-      //: Determine query type FIRST
-      const isDriverQuery = apiResponse.intent === 'query_drivers';
-      const isForestQuery = apiResponse.intent === 'query_forest';
+      const isFloodStatistics = apiResponse.intent === 'flood_statistics';
+      const isFloodOptical = apiResponse.intent === 'flood_optical';
       
-      console.log('[Dashboard] Is driver query:', isDriverQuery);
-      console.log('[Dashboard] Is forest query:', isForestQuery);
-      console.log('[Dashboard] Country changed:', countryChanged);
-      
-      // ✅ CLEAR FIRE DATA when switching to forest/driver queries
-      if (isForestQuery || isDriverQuery) {
-        console.log('[Dashboard] Clearing fire data for forest/driver query');
-        setFireStats(null);
-        removeFireMarkers();
-      }
-      
-      if (countryChanged) {
-        console.log('[Dashboard] Country changed - removing all layers');
+      // ─────────────────────────────────────────────────────────────────────
+      // FLOOD STATISTICS FOLLOW-UP (on-demand population/cropland)
+      // ─────────────────────────────────────────────────────────────────────
+      if (isFloodStatistics) {
+        console.log('[Dashboard] 📊 Flood statistics follow-up received');
         
-        // Remove all existing layers
-        removeHansenLayers(map.current);
-        if (hasDriverLayer(map.current)) {
-          removeDriverLayer(map.current);
+        if (apiResponse.data && floodData) {
+          // Update flood data with new statistics
+          setFloodData(prev => prev ? {
+            ...prev,
+            statistics: {
+              ...prev.statistics,
+              exposed_population: apiResponse.data.exposed_population || apiResponse.data.statistics?.exposed_population || 0,
+              flooded_cropland_ha: apiResponse.data.flooded_cropland_ha || apiResponse.data.statistics?.flooded_cropland_ha || 0,
+              flooded_urban_ha: apiResponse.data.flooded_urban_ha || apiResponse.data.statistics?.flooded_urban_ha || 0
+            }
+          } : null);
+          
+          console.log('[Dashboard] ✅ Flood statistics updated:', apiResponse.data);
         }
         
-        setAvailableLayers([]);
-        setDriverLayerData(null);
+        // Add AI response to chat
+        const aiResponse = apiResponse.report || apiResponse.answer || 'Statistics loaded successfully';
+        setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+        
+        setIsLoadingQuery(false);
+        return; // EXIT EARLY - Don't process other intents
       }
       
+      // ─────────────────────────────────────────────────────────────────────
+      // FLOOD OPTICAL FOLLOW-UP (on-demand Sentinel-2 imagery) - v5.2 FIXED
+      // ─────────────────────────────────────────────────────────────────────
+      if (isFloodOptical) {
+        console.log('[Dashboard] 🛰️ Flood optical follow-up received');
+        
+        if (apiResponse.data?.tiles && floodData) {
+          const opticalTiles = apiResponse.data.tiles;
+          
+          // Merge optical tiles with existing flood tiles
+          const updatedTiles: FloodTiles = {
+            ...floodData.tiles,
+            optical_before: opticalTiles.optical_before,
+            optical_after: opticalTiles.optical_after,
+            false_color_after: opticalTiles.false_color_after,
+            ndwi_after: opticalTiles.ndwi_after
+          };
+          
+          // Update flood data with new tiles
+          setFloodData(prev => prev ? {
+            ...prev,
+            tiles: updatedTiles
+          } : null);
+          
+          // Add optical layers to map
+          if (map.current) {
+            addOpticalLayers(map.current, opticalTiles, floodLayers, floodOpacity);
+          }
+          
+          // Enable optical after layer by default (show it on the map)
+          setFloodLayers(prev => ({
+            ...prev,
+            opticalAfter: true,
+            opticalBefore: false,
+            falseColor: false,
+            ndwi: false
+          }));
+          
+          console.log('[Dashboard] ✅ Optical tiles added:', Object.keys(opticalTiles).filter(k => opticalTiles[k as keyof typeof opticalTiles]));
+        }
+        
+        // Add AI response to chat
+        const aiResponse = apiResponse.report || apiResponse.answer || 'Optical imagery loaded successfully';
+        setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+        
+        setIsLoadingQuery(false);
+        return; // EXIT EARLY - Don't process other intents
+      }
+
+      // ========================================================================
+      // STANDARD INTENT HANDLING (Non-follow-up queries)
+      // ========================================================================
+
+      const responseCountry = apiResponse.data?.country || detectedCountry || currentCountry;
+      
+      // Check if country changed
+      const countryChanged = responseCountry !== currentCountry;
+      console.log('[Query] Current country:', currentCountry, '| Response country:', responseCountry, '| Changed:', countryChanged);
+      
+      if (responseCountry && countryChanged) {
+        flyToCountry(responseCountry);
+        setCurrentCountry(responseCountry);
+      }
+
       // ========================================
-      // LOAD HANSEN LAYERS (for forest queries)
+      // 🌊 FLOOD DETECTION (Initial Query)
       // ========================================
-      if (isForestQuery && (countryChanged || availableLayers.length === 0)) {
-        console.log('[Dashboard] Loading Hansen tiles (baseline/loss/gain)...');
+      const isFloodQuery = apiResponse.intent === 'query_floods';
+      
+      if (isFloodQuery && apiResponse.data?.show_flood) {
+        console.log('[Dashboard] 🌊 Flood query detected, processing flood data...');
+        
+        // CLEAR ALL OTHER LAYERS FIRST
+        if (map.current) {
+          removeHansenLayers(map.current);
+          if (hasDriverLayer(map.current)) {
+            removeDriverLayer(map.current);
+          }
+          removeFireMarkers();
+        }
+        
+        // CLEAR OTHER STATS
+        setFireStats(null);
+        setForestStats(null);
+        setDriverBreakdown(null);
+        setDriverLayerData(null);
+        
+        // SET FLOOD DATA
+        setFloodData(apiResponse.data);
+        
+        // RESET FLOOD LAYERS TO DEFAULTS (ensures clean state)
+        setFloodLayers(DEFAULT_FLOOD_LAYERS);
+        setFloodOpacity(DEFAULT_FLOOD_OPACITY);
+        
+        // ADD FLOOD LAYERS TO MAP
+        if (map.current && apiResponse.data.tiles) {
+          addFloodLayers(
+            map.current,
+            apiResponse.data.tiles,
+            DEFAULT_FLOOD_LAYERS,
+            DEFAULT_FLOOD_OPACITY
+          );
+        }
+        
+        // FLY TO FLOOD LOCATION
+        if (map.current && apiResponse.data.center) {
+          flyToFloodLocation(
+            map.current,
+            apiResponse.data.center,
+            apiResponse.data.zoom || 9
+          );
+        }
+        
+        // UPDATE AVAILABLE LAYERS
+        setAvailableLayers(['flood']);
+        
+        // UPDATE VISIBILITY STATE
+        setVisibleLayers({
+          baseline: false,
+          loss: false,
+          gain: false,
+          drivers: false
+        });
+        
+        console.log('[Dashboard] ✅ Flood data loaded successfully');
+        
+        // ADD AI RESPONSE TO CHAT
+        const aiResponse = apiResponse.report || apiResponse.answer || 'Flood data loaded successfully';
+        setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+        
+        setIsLoadingQuery(false);
+        return;
+      }
+
+      // ========================================
+      // 🔥 FIRE DETECTION (Clear flood data first)
+      // ========================================
+      const isFireQuery = apiResponse.intent === 'query_fires_realtime' || 
+                          /\b(fire|fires|burning|wildfire|blaze)\b/i.test(userMessage);
+
+      if (isFireQuery && responseCountry) {
+        console.log('[Dashboard] 🔥 Fire query detected, fetching live fire data...');
+        
+        // CLEAR FLOOD DATA
+        clearFloodData();
         
         try {
-          const geeData = await getHansenForestTiles(responseCountry);
-          
-          const defaultVisibility: LayerVisibility = {
-            baseline: true,
-            loss: true,
-            gain: false,
-            drivers: false
-          };
-          
-          const defaultOpacity = {
-            baseline: 0.6,
-            loss: 0.8,
-            gain: 0.3,
-            drivers: 0.7
-          };
-          
-          // Remove old Hansen layers before adding new ones
-          removeHansenLayers(map.current);
-          
-          // Add Hansen layers
-          addHansenLayers(map.current, geeData, defaultVisibility, defaultOpacity);
-          
-          setAvailableLayers(['baseline', 'loss', 'gain']);
-          setVisibleLayers(defaultVisibility);
-          
-          console.log('[Dashboard] ✅ Hansen layers loaded successfully');
-          // BOUNDARY ON TOP OF HANSEN LAYERS
-          await addCountryBoundary(responseCountry);
-        } catch (hansenError) {
-          console.error('[Dashboard] ❌ Hansen layer error:', hansenError);
-        }
-      }
-        
-        // ========================================
-        // LOAD DRIVER LAYER (for driver queries ONLY)
-        // ========================================
-        if (isDriverQuery) {
-          console.log('[Dashboard] 🎯 Driver query detected, loading driver layer...');
-          
-          try {
-            // Get driver tiles
-            const driverData = await getDriverTiles(responseCountry);
-            
-            console.log('[Dashboard] Driver data received:', driverData);
-            
-            if (driverData.success) {
-              // Remove old driver layer if exists
-              if (hasDriverLayer(map.current)) {
-                removeDriverLayer(map.current);
-              }
-              
-              // Add new driver layer
-              addDriverLayer(map.current, driverData, 0.7, true);
-              
-              // Update state
-              setDriverLayerData(driverData);
-              setVisibleLayers(prev => ({ ...prev, drivers: true }));
-              setAvailableLayers(prev => {
-                const newLayers = [...new Set([...prev, 'drivers'])];
-                return newLayers;
-              });
-              
-              console.log('[Dashboard] ✅ Driver layer loaded successfully');
+          // REMOVE ALL FOREST LAYERS FIRST
+          if (map.current) {
+            removeHansenLayers(map.current);
+            if (hasDriverLayer(map.current)) {
+              removeDriverLayer(map.current);
             }
-          } catch (driverError) {
-            console.error('[Dashboard] ❌ Driver layer error:', driverError);
           }
-        } else {
-          // ✅ NOT a driver query - remove driver layer if it exists
-          if (hasDriverLayer(map.current)) {
-            console.log('[Dashboard] Removing driver layer (forest query)');
-            removeDriverLayer(map.current);
+          
+          const fireData = await getLiveFireDetections(responseCountry, 2);
+          
+          console.log('[Dashboard] Fire data received:', fireData);
+          
+          if (fireData.success) {
+            // Set fire statistics
+            setFireStats(fireData.statistics);
+            
+            // Add fire markers to map
+            if (fireData.fires.length > 0) {
+              addFireMarkers(fireData.fires);
+            }
+            
+            // SET ONLY FIRES LAYER
+            setAvailableLayers(['fires']);
+            
+            // CLEAR FOREST STATS AND DRIVER DATA
+            setForestStats(null);
+            setDriverBreakdown(null);
             setDriverLayerData(null);
-            setVisibleLayers(prev => ({ ...prev, drivers: false }));
-            setAvailableLayers(prev => prev.filter(layer => layer !== 'drivers'));
+            
+            // UPDATE VISIBILITY STATE
+            setVisibleLayers({
+              baseline: false,
+              loss: false,
+              gain: false,
+              drivers: false
+            });
+            
+            // Add country boundary
+            await addCountryBoundary(responseCountry);
+            
+            console.log('[Dashboard] ✅ Fire data loaded successfully');
+            
+            // ADD AI RESPONSE TO CHAT
+            const aiResponse = apiResponse.report || apiResponse.answer || 'Fire data loaded successfully';
+            setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+            
+            setIsLoadingQuery(false);
+            return;
           }
+        } catch (fireError) {
+          console.error('[Dashboard] ❌ Fire data error:', fireError);
         }
       }
-    } catch (geeError) {
-      console.error('[Dashboard] GEE tile error:', geeError);
-    }
 
-    // 🟢 FIX: Only update stats on forest queries, NOT on driver queries
-    if (apiResponse.data && apiResponse.intent !== 'query_drivers') {
-      const data = apiResponse.data;
-      
-      const transformedYearlyData = (data.yearly_data || []).map((item: any) => ({
-        year: item.year,
-        loss: item.loss_ha || item.loss || 0
-      }));
-      
-      setForestStats({
-        totalLoss: data.summary?.total_loss_ha || 0,
-        recentYear: data.summary?.recent_year || 2024,
-        recentLoss: data.summary?.recent_loss_ha || 0,
-        trend: data.trend_analysis?.trend || 'UNKNOWN',
-        severity: data.trend_analysis?.severity || 'UNKNOWN',
-        changePercent: data.trend_analysis?.change_percent || 0,
-        peakYear: data.peak_loss_year?.year || 0,
-        peakLoss: data.peak_loss_year?.loss_ha || 0,
-        lowestYear: data.lowest_loss_year?.year || 0,
-        lowestLoss: data.lowest_loss_year?.loss_ha || 0,
-        yearlyData: transformedYearlyData,
-        recentAvg: data.trend_analysis?.recent_avg_loss_ha || 0,
-        earlyAvg: data.trend_analysis?.early_avg_loss_ha || 0,
-        yearsAvailable: data.summary?.years_available || 0,
-        dataRange: data.summary?.data_range || '',
-        dataDescription: data.data_description || ''
-      });
+      // ========================================
+      // FOREST/DRIVER LAYER LOADING
+      // ========================================
 
-      if (data.driver_breakdown && Array.isArray(data.driver_breakdown)) {
-        setDriverBreakdown(data.driver_breakdown);
-      } else {
-        setDriverBreakdown(null);
+      // CLEAR FLOOD DATA for non-flood queries
+      if (!isFloodQuery) {
+        clearFloodData();
       }
+
+      try {
+        if (map.current && mapLoaded) {
+          console.log('[Dashboard] Loading GEE tiles for:', responseCountry);
+          console.log('[Dashboard] Intent:', apiResponse.intent);
+          
+          const isDriverQuery = apiResponse.intent === 'query_drivers';
+          const isForestQuery = apiResponse.intent === 'query_forest';
+          
+          console.log('[Dashboard] Is driver query:', isDriverQuery);
+          console.log('[Dashboard] Is forest query:', isForestQuery);
+          console.log('[Dashboard] Country changed:', countryChanged);
+          
+          // CLEAR FIRE DATA when switching to forest/driver queries
+          if (isForestQuery || isDriverQuery) {
+            console.log('[Dashboard] Clearing fire data for forest/driver query');
+            setFireStats(null);
+            removeFireMarkers();
+          }
+          
+          if (countryChanged) {
+            console.log('[Dashboard] Country changed - removing all layers');
+            
+            removeHansenLayers(map.current);
+            if (hasDriverLayer(map.current)) {
+              removeDriverLayer(map.current);
+            }
+            
+            setAvailableLayers([]);
+            setDriverLayerData(null);
+          }
+          
+          // LOAD HANSEN LAYERS (for forest queries)
+          if (isForestQuery && (countryChanged || availableLayers.length === 0)) {
+            console.log('[Dashboard] Loading Hansen tiles (baseline/loss/gain)...');
+            
+            try {
+              const geeData = await getHansenForestTiles(responseCountry);
+              
+              const defaultVisibility: LayerVisibility = {
+                baseline: true,
+                loss: true,
+                gain: false,
+                drivers: false
+              };
+              
+              const defaultOpacity = {
+                baseline: 0.6,
+                loss: 0.8,
+                gain: 0.3,
+                drivers: 0.7
+              };
+              
+              removeHansenLayers(map.current);
+              addHansenLayers(map.current, geeData, defaultVisibility, defaultOpacity);
+              
+              setAvailableLayers(['baseline', 'loss', 'gain']);
+              setVisibleLayers(defaultVisibility);
+              
+              console.log('[Dashboard] ✅ Hansen layers loaded successfully');
+              await addCountryBoundary(responseCountry);
+            } catch (hansenError) {
+              console.error('[Dashboard] ❌ Hansen layer error:', hansenError);
+            }
+          }
+          
+          // LOAD DRIVER LAYER (for driver queries ONLY)
+          if (isDriverQuery) {
+            console.log('[Dashboard] 🎯 Driver query detected, loading driver layer...');
+            
+            try {
+              const driverData = await getDriverTiles(responseCountry);
+              
+              console.log('[Dashboard] Driver data received:', driverData);
+              
+              if (driverData.success) {
+                if (hasDriverLayer(map.current)) {
+                  removeDriverLayer(map.current);
+                }
+                
+                addDriverLayer(map.current, driverData, 0.7, true);
+                
+                setDriverLayerData(driverData);
+                setVisibleLayers(prev => ({ ...prev, drivers: true }));
+                setAvailableLayers(prev => {
+                  const newLayers = [...new Set([...prev, 'drivers'])];
+                  return newLayers;
+                });
+                
+                console.log('[Dashboard] ✅ Driver layer loaded successfully');
+              }
+            } catch (driverError) {
+              console.error('[Dashboard] ❌ Driver layer error:', driverError);
+            }
+          } else {
+            if (hasDriverLayer(map.current)) {
+              console.log('[Dashboard] Removing driver layer (forest query)');
+              removeDriverLayer(map.current);
+              setDriverLayerData(null);
+              setVisibleLayers(prev => ({ ...prev, drivers: false }));
+              setAvailableLayers(prev => prev.filter(layer => layer !== 'drivers'));
+            }
+          }
+        }
+      } catch (geeError) {
+        console.error('[Dashboard] GEE tile error:', geeError);
+      }
+
+      // Only update stats on forest queries, NOT on driver queries
+      if (apiResponse.data && apiResponse.intent !== 'query_drivers') {
+        const data = apiResponse.data;
+        
+        const transformedYearlyData = (data.yearly_data || []).map((item: any) => ({
+          year: item.year,
+          loss: item.loss_ha || item.loss || 0
+        }));
+        
+        setForestStats({
+          totalLoss: data.summary?.total_loss_ha || 0,
+          recentYear: data.summary?.recent_year || 2024,
+          recentLoss: data.summary?.recent_loss_ha || 0,
+          trend: data.trend_analysis?.trend || 'UNKNOWN',
+          severity: data.trend_analysis?.severity || 'UNKNOWN',
+          changePercent: data.trend_analysis?.change_percent || 0,
+          peakYear: data.peak_loss_year?.year || 0,
+          peakLoss: data.peak_loss_year?.loss_ha || 0,
+          lowestYear: data.lowest_loss_year?.year || 0,
+          lowestLoss: data.lowest_loss_year?.loss_ha || 0,
+          yearlyData: transformedYearlyData,
+          recentAvg: data.trend_analysis?.recent_avg_loss_ha || 0,
+          earlyAvg: data.trend_analysis?.early_avg_loss_ha || 0,
+          yearsAvailable: data.summary?.years_available || 0,
+          dataRange: data.summary?.data_range || '',
+          dataDescription: data.data_description || ''
+        });
+
+        if (data.driver_breakdown && Array.isArray(data.driver_breakdown)) {
+          setDriverBreakdown(data.driver_breakdown);
+        } else {
+          setDriverBreakdown(null);
+        }
+      }
+
+      const aiResponse = apiResponse.report || apiResponse.answer || 'Done';
+      setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+
+    } catch (error) {
+      console.error('[Query] Error:', error);
+      setChatMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: `Error: ${error instanceof Error ? error.message : 'Failed'}`
+      }]);
+    } finally {
+      setIsLoadingQuery(false);
     }
+  };
 
-    const aiResponse = apiResponse.report || apiResponse.answer || 'Done';
-    setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
-
-  } catch (error) {
-    console.error('[Query] Error:', error);
-    setChatMessages(prev => [...prev, { 
-      role: 'assistant', 
-      content: `Error: ${error instanceof Error ? error.message : 'Failed'}`
-    }]);
-  } finally {
-    setIsLoadingQuery(false);
-  }
-};
   return (
     <div className="relative h-screen w-screen bg-slate-950 text-gray-100 antialiased overflow-hidden">
       
-      {/* Header - Fixed at top with higher z-index */}
+      {/* Header */}
       <header className="fixed top-0 left-0 right-0 z-50 flex h-14 items-center justify-between px-6 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800 shadow-sm">
         <div className="flex items-center gap-2.5">
           <div className="h-7 w-7 overflow-hidden">
@@ -792,8 +1062,7 @@ try {
         </div>
 
         <div className="flex items-center gap-2">
-          {/*  Stats panel toggle button */}
-          {hasQueried && (forestStats || fireStats) && (
+          {hasQueried && (forestStats || fireStats || floodData) && (
             <button
               onClick={() => setShowStatsPanel(!showStatsPanel)}
               className="h-8 px-3 rounded-lg bg-slate-800 border border-slate-700 flex items-center gap-2 text-gray-300 font-medium text-xs cursor-pointer hover:bg-slate-700 transition-colors"
@@ -812,10 +1081,10 @@ try {
         </div>
       </header>
 
-      {/* Main content area - starts below header */}
+      {/* Main content area */}
       <div className="relative z-40 flex h-screen pt-14">
         
-        {/* Left sidebar - Layers (ONLY SHOW AFTER QUERY) */}
+        {/* Left sidebar - Layers */}
         {hasQueried && availableLayers.length > 0 && (
           <aside className="w-56 bg-slate-900/95 backdrop-blur-sm border-r border-slate-800 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -885,7 +1154,6 @@ try {
                     </label>
                   )}
 
-                  {/* Driver layer toggle */}
                   {availableLayers.includes('drivers') && (
                     <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border ${
                       visibleLayers.drivers 
@@ -905,7 +1173,7 @@ try {
                       </div>
                     </label>
                   )}
-                  {/*  Fire Layer Toggle */}
+
                   {availableLayers.includes('fires') && (
                     <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border bg-slate-800 border-slate-700`}>
                       <input 
@@ -928,8 +1196,20 @@ try {
                       </div>
                     </label>
                   )}
+
+                  {/* FLOOD LAYER CONTROLS */}
+                  {availableLayers.includes('flood') && floodData?.tiles && (
+                    <div className="mt-4 pt-4 border-t border-slate-700">
+                      <FloodLayerControls
+                        tiles={floodData.tiles}
+                        layers={floodLayers}
+                        opacity={floodOpacity}
+                        onToggleLayer={handleToggleFloodLayer}
+                        onOpacityChange={handleFloodOpacityChange}
+                      />
+                    </div>
+                  )}
                  
-                  {/*  Boundary toggle */}
                   {showBoundary && (
                     <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border bg-slate-800 border-slate-700`}>
                       <input 
@@ -948,7 +1228,6 @@ try {
                 </div>
               </div>
 
-              {/*   Driver legend */}
               {availableLayers.includes('drivers') && visibleLayers.drivers && driverLayerData && (
                 <div className="mt-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
                   <h3 className="text-xs font-semibold mb-2.5 text-gray-200">Deforestation Drivers</h3>
@@ -976,7 +1255,7 @@ try {
           </aside>
         )}
 
-        {/* Map container - Full height, extends to top */}
+        {/* Map container */}
         <div className="flex-1 relative bg-slate-950">
           <div 
             ref={mapContainer} 
@@ -1026,276 +1305,305 @@ try {
                     <span className="text-[10px] font-medium text-gray-300">Deforestation Drivers</span>
                   </div>
                 )}
-                      {/* Fire legend */}
-      {availableLayers.includes('fires') && (
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-2.5 rounded-full bg-gradient-to-r from-orange-500 to-red-600"></div>
-          <span className="text-[10px] font-medium text-gray-300">Active Fires (NASA FIRMS)</span>
-        </div>
-      )}
+
+                {availableLayers.includes('fires') && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-2.5 rounded-full bg-gradient-to-r from-orange-500 to-red-600"></div>
+                    <span className="text-[10px] font-medium text-gray-300">Active Fires (NASA FIRMS)</span>
+                  </div>
+                )}
+
+                {availableLayers.includes('flood') && (
+                  <div className="space-y-1.5 pt-2 border-t border-slate-700">
+                    <div className="text-[10px] font-semibold text-gray-400 uppercase">Flood Detection</div>
+                    {floodLayers.floodExtent && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-2.5 rounded-sm bg-red-500"></div>
+                        <span className="text-[10px] font-medium text-gray-300">Flood Extent</span>
+                      </div>
+                    )}
+                    {floodLayers.changeDetection && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-2.5 rounded-sm bg-gradient-to-r from-blue-500 to-red-500"></div>
+                        <span className="text-[10px] font-medium text-gray-300">SAR Change</span>
+                      </div>
+                    )}
+                    {floodLayers.permanentWater && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-2.5 rounded-sm bg-cyan-400"></div>
+                        <span className="text-[10px] font-medium text-gray-300">Permanent Water</span>
+                      </div>
+                    )}
+                    {floodLayers.opticalAfter && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-2.5 rounded-sm bg-green-500"></div>
+                        <span className="text-[10px] font-medium text-gray-300">Optical Imagery</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
 
-{/* Right sidebar - Stats */}
-{hasQueried && showStatsPanel && (
-  <>
-    {fireStats ? (
-      <FireStatsPanel 
-        statistics={fireStats} 
-        countryName={getCountryName(currentCountry)} 
-      />
-    ) : (
-      forestStats && (
-        <aside className="w-[360px] bg-slate-900/95 backdrop-blur-sm border-l border-slate-800 overflow-y-auto">
-          <div className="p-4 space-y-3.5">
-            
-            <div className="pb-2.5 border-b border-slate-800">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-100">{getCountryName(currentCountry)}</h2>
-                  <p className="text-[11px] text-gray-500 mt-1">
-                    Tree Cover Loss Analysis • {forestStats.dataRange}
-                  </p>
-                </div>
-                <span className="text-[10px] px-2 py-1 bg-emerald-950/50 text-emerald-400 rounded font-medium border border-emerald-900/50">GFW</span>
-              </div>
-            </div>
-
-            {/* Summary text */}
-            {forestStats.yearlyData && forestStats.yearlyData.length > 0 && (
-              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
-                <p className="text-xs text-gray-300 leading-relaxed">
-                  From <strong className="text-gray-100">{forestStats.yearlyData[0]?.year || 2001}</strong> to <strong className="text-gray-100">{forestStats.recentYear}</strong>,{' '}
-                  {getCountryName(currentCountry)} lost{' '}
-                  <strong className="text-red-400">{(forestStats.totalLoss / 1000000).toFixed(1)} Mha</strong> of tree cover.
-                </p>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
-                <div className="text-[10px] text-gray-500 mb-1 uppercase font-semibold tracking-wide">Total Loss</div>
-                <div className="text-2xl font-bold text-red-400">
-                  {(forestStats.totalLoss / 1000000).toFixed(1)} Mha
-                </div>
-                <div className="text-[10px] text-gray-600 mt-0.5">{forestStats.dataRange}</div>
-              </div>
-              
-              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
-                <div className="text-[10px] text-gray-500 mb-1 uppercase font-semibold tracking-wide">{forestStats.recentYear} Loss</div>
-                <div className="text-2xl font-bold text-orange-400">
-                  {(forestStats.recentLoss / 1000).toFixed(0)} kha
-                </div>
-                <div className="text-[10px] text-gray-600 mt-0.5">recent year</div>
-              </div>
-            </div>
-
-            {/* DRIVERS DONUT */}
-            {driverBreakdown && driverBreakdown.length > 0 && (
-              <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
-                <div className="p-3 border-b border-slate-800">
-                  <h3 className="text-xs font-bold text-gray-100">DRIVERS OF DEFORESTATION</h3>
-                  <p className="text-[10px] text-gray-500 mt-0.5">
-                    Causes of forest loss in {forestStats.recentYear}
-                  </p>
-                </div>
-                
-                <div className="p-3">
-                  {(() => {
-                    const colors = [
-                      '#EF4444', '#F97316', '#F59E0B', '#10B981', 
-                      '#3B82F6', '#8B5CF6', '#EC4899', '#6B7280'
-                    ];
+        {/* Right sidebar - Stats */}
+        {hasQueried && showStatsPanel && (
+          <>
+            {floodData ? (
+              <FloodStatsPanel 
+                data={floodData} 
+                locationName={floodData.location_name || 'Unknown Location'}
+                onSubRegionClick={handleFloodSubRegionClick}
+              />
+            ) : fireStats ? (
+              <FireStatsPanel 
+                statistics={fireStats} 
+                countryName={getCountryName(currentCountry)} 
+              />
+            ) : (
+              forestStats && (
+                <aside className="w-[360px] bg-slate-900/95 backdrop-blur-sm border-l border-slate-800 overflow-y-auto">
+                  <div className="p-4 space-y-3.5">
                     
-                    let cumulativePercent = 0;
-                    
-                    return (
-                      <div className="space-y-3">
-                        <div className="relative w-40 h-40 mx-auto">
-                          <svg viewBox="0 0 100 100" className="transform -rotate-90">
-                            {driverBreakdown.map((driver, idx) => {
-                              const percent = driver.percentage;
-                              const startPercent = cumulativePercent;
-                              cumulativePercent += percent;
-                              
-                              const startAngle = (startPercent / 100) * 360;
-                              const endAngle = (cumulativePercent / 100) * 360;
-                              
-                              const x1 = 50 + 40 * Math.cos((Math.PI * startAngle) / 180);
-                              const y1 = 50 + 40 * Math.sin((Math.PI * startAngle) / 180);
-                              const x2 = 50 + 40 * Math.cos((Math.PI * endAngle) / 180);
-                              const y2 = 50 + 40 * Math.sin((Math.PI * endAngle) / 180);
-                              
-                              const largeArc = percent > 50 ? 1 : 0;
-                              
-                              return (
-                                <path
-                                  key={idx}
-                                  d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`}
-                                  fill={colors[idx % colors.length]}
-                                  className="hover:opacity-80 transition-opacity cursor-pointer"
-                                />
-                              );
-                            })}
-                            <circle cx="50" cy="50" r="25" fill="#0f172a" />
-                          </svg>
-                          <div className="absolute inset-0 flex flex-col items-center justify-center">
-                            <div className="text-xl font-bold text-gray-100">
-                              {driverBreakdown.reduce((sum, d) => sum + d.percentage, 0).toFixed(0)}%
-                            </div>
-                            <div className="text-[9px] text-gray-500">Total Loss</div>
-                          </div>
+                    <div className="pb-2.5 border-b border-slate-800">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <h2 className="text-xl font-bold text-gray-100">{getCountryName(currentCountry)}</h2>
+                          <p className="text-[11px] text-gray-500 mt-1">
+                            Tree Cover Loss Analysis • {forestStats.dataRange}
+                          </p>
+                        </div>
+                        <span className="text-[10px] px-2 py-1 bg-emerald-950/50 text-emerald-400 rounded font-medium border border-emerald-900/50">GFW</span>
+                      </div>
+                    </div>
+
+                    {forestStats.yearlyData && forestStats.yearlyData.length > 0 && (
+                      <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
+                        <p className="text-xs text-gray-300 leading-relaxed">
+                          From <strong className="text-gray-100">{forestStats.yearlyData[0]?.year || 2001}</strong> to <strong className="text-gray-100">{forestStats.recentYear}</strong>,{' '}
+                          {getCountryName(currentCountry)} lost{' '}
+                          <strong className="text-red-400">{(forestStats.totalLoss / 1000000).toFixed(1)} Mha</strong> of tree cover.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
+                        <div className="text-[10px] text-gray-500 mb-1 uppercase font-semibold tracking-wide">Total Loss</div>
+                        <div className="text-2xl font-bold text-red-400">
+                          {(forestStats.totalLoss / 1000000).toFixed(1)} Mha
+                        </div>
+                        <div className="text-[10px] text-gray-600 mt-0.5">{forestStats.dataRange}</div>
+                      </div>
+                      
+                      <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800">
+                        <div className="text-[10px] text-gray-500 mb-1 uppercase font-semibold tracking-wide">{forestStats.recentYear} Loss</div>
+                        <div className="text-2xl font-bold text-orange-400">
+                          {(forestStats.recentLoss / 1000).toFixed(0)} kha
+                        </div>
+                        <div className="text-[10px] text-gray-600 mt-0.5">recent year</div>
+                      </div>
+                    </div>
+
+                    {forestStats.yearlyData && forestStats.yearlyData.length > 0 && (
+                      <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
+                        <div className="p-3 border-b border-slate-800">
+                          <h3 className="text-xs font-bold text-gray-100">RECENT YEARS (LAST 10)</h3>
                         </div>
                         
-                        <div className="space-y-1.5">
-                          {driverBreakdown.map((driver, idx) => (
-                            <div key={idx} className="flex items-center justify-between text-[11px]">
-                              <div className="flex items-center gap-1.5 flex-1">
-                                <div 
-                                  className="w-2.5 h-2.5 rounded-sm flex-shrink-0" 
-                                  style={{backgroundColor: colors[idx % colors.length]}}
-                                ></div>
-                                <span className="text-gray-300 truncate">
-                                  {driver.driver_category}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5 ml-2">
-                                <span className="font-semibold text-gray-100">{driver.percentage.toFixed(1)}%</span>
-                                <span className="text-gray-600 text-[10px]">
-                                  ({(driver.loss_ha / 1000).toFixed(1)}k ha)
-                                </span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
-
-            {/* HISTOGRAM */}
-            {forestStats.yearlyData && forestStats.yearlyData.length > 0 && (
-              <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
-                <div className="p-3 border-b border-slate-800">
-                  <h3 className="text-xs font-bold text-gray-100">RECENT YEARS (LAST 10)</h3>
-                </div>
-                
-                <div className="p-3">
-                  {(() => {
-                    const last10 = forestStats.yearlyData.slice(-10);
-                    const maxLoss = Math.max(...last10.map(d => d.loss));
-                    const minLoss = Math.min(...last10.map(d => d.loss));
-                    
-                    const getRelativeHeight = (value: number) => {
-                      if (maxLoss === minLoss) return 100;
-                      const normalized = (value - minLoss) / (maxLoss - minLoss);
-                      return 20 + (normalized * 80);
-                    };
-                    
-                    return (
-                      <>
-                        <div className="h-40 flex items-end justify-between gap-0.5 bg-slate-900/50 p-2 rounded relative">
-                          {last10.map((yearData, idx) => {
-                            const heightPercent = getRelativeHeight(yearData.loss);
-                            const heightPx = (heightPercent / 100) * 144;
+                        <div className="p-3">
+                          {(() => {
+                            const last10 = forestStats.yearlyData.slice(-10);
+                            const maxLoss = Math.max(...last10.map(d => d.loss));
+                            const minLoss = Math.min(...last10.map(d => d.loss));
+                            
+                            const getRelativeHeight = (value: number) => {
+                              if (maxLoss === minLoss) return 100;
+                              const normalized = (value - minLoss) / (maxLoss - minLoss);
+                              return 20 + (normalized * 80);
+                            };
                             
                             return (
-                              <div key={idx} className="flex-1 flex flex-col items-center justify-end group relative">
-                                <div 
-                                  className="w-full bg-gradient-to-t from-red-600 via-red-500 to-orange-400 hover:from-red-700 hover:via-red-600 hover:to-orange-500 transition-all cursor-pointer rounded-t"
-                                  style={{
-                                    height: `${heightPx}px`,
-                                    minHeight: '16px'
-                                  }}
-                                >
-                                  <div className="absolute -top-14 left-1/2 -translate-x-1/2 bg-slate-950 text-gray-100 text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 border border-slate-800">
-                                    <div className="font-semibold">{yearData.year}</div>
-                                    <div className="text-gray-400">{(yearData.loss / 1000).toFixed(1)} kha</div>
-                                  </div>
+                              <>
+                                <div className="h-40 flex items-end justify-between gap-0.5 bg-slate-900/50 p-2 rounded relative">
+                                  {last10.map((yearData, idx) => {
+                                    const heightPercent = getRelativeHeight(yearData.loss);
+                                    const heightPx = (heightPercent / 100) * 144;
+                                    
+                                    return (
+                                      <div key={idx} className="flex-1 flex flex-col items-center justify-end group relative">
+                                        <div 
+                                          className="w-full bg-gradient-to-t from-red-600 via-red-500 to-orange-400 hover:from-red-700 hover:via-red-600 hover:to-orange-500 transition-all cursor-pointer rounded-t"
+                                          style={{
+                                            height: `${heightPx}px`,
+                                            minHeight: '16px'
+                                          }}
+                                        >
+                                          <div className="absolute -top-14 left-1/2 -translate-x-1/2 bg-slate-950 text-gray-100 text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 border border-slate-800">
+                                            <div className="font-semibold">{yearData.year}</div>
+                                            <div className="text-gray-400">{(yearData.loss / 1000).toFixed(1)} kha</div>
+                                          </div>
+                                        </div>
+                                        <span className="text-[9px] text-gray-500 mt-1">{yearData.year}</span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                                <span className="text-[9px] text-gray-500 mt-1">{yearData.year}</span>
-                              </div>
+                                
+                                <div className="flex justify-between mt-2 text-[9px] text-gray-600">
+                                  <span>Min: {(minLoss / 1000).toFixed(0)}k ha</span>
+                                  <span>Max: {(maxLoss / 1000).toFixed(0)}k ha</span>
+                                </div>
+                              </>
                             );
-                          })}
+                          })()}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="bg-slate-800/50 rounded-lg border border-slate-800 p-3">
+                      <h3 className="text-xs font-bold text-gray-100 mb-2">TREND ANALYSIS</h3>
+                      <div className="grid grid-cols-2 gap-3 text-[11px]">
+                        <div>
+                          <div className="text-gray-500 mb-0.5">Trend</div>
+                          <div className={`font-bold text-base ${
+                            forestStats.trend === 'INCREASING' ? 'text-red-400' : 
+                            forestStats.trend === 'DECREASING' ? 'text-emerald-400' : 'text-amber-400'
+                          }`}>
+                            {forestStats.trend}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500 mb-0.5">Severity</div>
+                          <div className="font-bold text-base text-gray-200">{forestStats.severity}</div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500 mb-0.5">Change Rate</div>
+                          <div className="font-bold text-base text-gray-200">{forestStats.changePercent.toFixed(1)}%</div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500 mb-0.5">Period</div>
+                          <div className="font-bold text-base text-gray-200">{forestStats.yearsAvailable} years</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {driverBreakdown && driverBreakdown.length > 0 && (
+                      <div className="bg-slate-800/50 rounded-lg border border-slate-800 overflow-hidden">
+                        <div className="p-3 border-b border-slate-800">
+                          <h3 className="text-xs font-bold text-gray-100">DRIVERS OF DEFORESTATION</h3>
+                          <p className="text-[10px] text-gray-500 mt-0.5">
+                            Causes of forest loss in {forestStats.recentYear}
+                          </p>
                         </div>
                         
-                        <div className="flex justify-between mt-2 text-[9px] text-gray-600">
-                          <span>Min: {(minLoss / 1000).toFixed(0)}k ha</span>
-                          <span>Max: {(maxLoss / 1000).toFixed(0)}k ha</span>
+                        <div className="p-3">
+                          {(() => {
+                            const colors = [
+                              '#EF4444', '#F97316', '#F59E0B', '#10B981', 
+                              '#3B82F6', '#8B5CF6', '#EC4899', '#6B7280'
+                            ];
+                            
+                            let cumulativePercent = 0;
+                            
+                            return (
+                              <div className="space-y-3">
+                                <div className="relative w-40 h-40 mx-auto">
+                                  <svg viewBox="0 0 100 100" className="transform -rotate-90">
+                                    {driverBreakdown.map((driver, idx) => {
+                                      const percent = driver.percentage;
+                                      const startPercent = cumulativePercent;
+                                      cumulativePercent += percent;
+                                      
+                                      const startAngle = (startPercent / 100) * 360;
+                                      const endAngle = (cumulativePercent / 100) * 360;
+                                      
+                                      const x1 = 50 + 40 * Math.cos((Math.PI * startAngle) / 180);
+                                      const y1 = 50 + 40 * Math.sin((Math.PI * startAngle) / 180);
+                                      const x2 = 50 + 40 * Math.cos((Math.PI * endAngle) / 180);
+                                      const y2 = 50 + 40 * Math.sin((Math.PI * endAngle) / 180);
+                                      
+                                      const largeArc = percent > 50 ? 1 : 0;
+                                      
+                                      return (
+                                        <path
+                                          key={idx}
+                                          d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`}
+                                          fill={colors[idx % colors.length]}
+                                          className="hover:opacity-80 transition-opacity cursor-pointer"
+                                        />
+                                      );
+                                    })}
+                                    <circle cx="50" cy="50" r="25" fill="#0f172a" />
+                                  </svg>
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                    <div className="text-xl font-bold text-gray-100">
+                                      {driverBreakdown.reduce((sum, d) => sum + d.percentage, 0).toFixed(0)}%
+                                    </div>
+                                    <div className="text-[9px] text-gray-500">Total Loss</div>
+                                  </div>
+                                </div>
+                                
+                                <div className="space-y-1.5">
+                                  {driverBreakdown.map((driver, idx) => (
+                                    <div key={idx} className="flex items-center justify-between text-[11px]">
+                                      <div className="flex items-center gap-1.5 flex-1">
+                                        <div 
+                                          className="w-2.5 h-2.5 rounded-sm flex-shrink-0" 
+                                          style={{backgroundColor: colors[idx % colors.length]}}
+                                        ></div>
+                                        <span className="text-gray-300 truncate">
+                                          {driver.driver_category}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 ml-2">
+                                        <span className="font-semibold text-gray-100">{driver.percentage.toFixed(1)}%</span>
+                                        <span className="text-gray-600 text-[10px]">
+                                          ({(driver.loss_ha / 1000).toFixed(1)}k ha)
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
+                      </div>
+                    )}
 
-            {/* TREND ANALYSIS */}
-            <div className="bg-slate-800/50 rounded-lg border border-slate-800 p-3">
-              <h3 className="text-xs font-bold text-gray-100 mb-2">TREND ANALYSIS</h3>
-              <div className="grid grid-cols-2 gap-3 text-[11px]">
-                <div>
-                  <div className="text-gray-500 mb-0.5">Trend</div>
-                  <div className={`font-bold text-base ${
-                    forestStats.trend === 'INCREASING' ? 'text-red-400' : 
-                    forestStats.trend === 'DECREASING' ? 'text-emerald-400' : 'text-amber-400'
-                  }`}>
-                    {forestStats.trend}
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div className="bg-red-950/20 rounded-lg p-3 border border-red-900/30">
+                        <div className="text-[10px] text-gray-500 mb-0.5 uppercase font-semibold">Peak Year</div>
+                        <div className="text-xl font-bold text-red-400">{forestStats.peakYear}</div>
+                        <div className="text-[10px] text-gray-600 mt-0.5">{(forestStats.peakLoss / 1000).toFixed(0)} kha</div>
+                      </div>
+                      
+                      <div className="bg-emerald-950/20 rounded-lg p-3 border border-emerald-900/30">
+                        <div className="text-[10px] text-gray-500 mb-0.5 uppercase font-semibold">Lowest Year</div>
+                        <div className="text-xl font-bold text-emerald-400">{forestStats.lowestYear}</div>
+                        <div className="text-[10px] text-gray-600 mt-0.5">{(forestStats.lowestLoss / 1000).toFixed(0)} kha</div>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800 text-[11px] text-gray-500">
+                      <div className="font-semibold text-gray-300 mb-1.5">Data Source</div>
+                      <div className="space-y-0.5">
+                        <div><strong className="text-gray-400">Source:</strong> Global Forest Watch</div>
+                        <div><strong className="text-gray-400">Dataset:</strong> {forestStats.dataDescription || 'UMD Hansen et al.'}</div>
+                        <div><strong className="text-gray-400">Resolution:</strong> 30m (Landsat)</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-gray-500 mb-0.5">Severity</div>
-                  <div className="font-bold text-base text-gray-200">{forestStats.severity}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500 mb-0.5">Change Rate</div>
-                  <div className="font-bold text-base text-gray-200">{forestStats.changePercent.toFixed(1)}%</div>
-                </div>
-                <div>
-                  <div className="text-gray-500 mb-0.5">Period</div>
-                  <div className="font-bold text-base text-gray-200">{forestStats.yearsAvailable} years</div>
-                </div>
-              </div>
-            </div>
+                </aside>
+              )
+            )}
+          </>
+        )}
+      </div>
 
-            {/* PEAK/LOWEST */}
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="bg-red-950/20 rounded-lg p-3 border border-red-900/30">
-                <div className="text-[10px] text-gray-500 mb-0.5 uppercase font-semibold">Peak Year</div>
-                <div className="text-xl font-bold text-red-400">{forestStats.peakYear}</div>
-                <div className="text-[10px] text-gray-600 mt-0.5">{(forestStats.peakLoss / 1000).toFixed(0)} kha</div>
-              </div>
-              
-              <div className="bg-emerald-950/20 rounded-lg p-3 border border-emerald-900/30">
-                <div className="text-[10px] text-gray-500 mb-0.5 uppercase font-semibold">Lowest Year</div>
-                <div className="text-xl font-bold text-emerald-400">{forestStats.lowestYear}</div>
-                <div className="text-[10px] text-gray-600 mt-0.5">{(forestStats.lowestLoss / 1000).toFixed(0)} kha</div>
-              </div>
-            </div>
-
-            {/* DATA SOURCE */}
-            <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-800 text-[11px] text-gray-500">
-              <div className="font-semibold text-gray-300 mb-1.5">Data Source</div>
-              <div className="space-y-0.5">
-                <div><strong className="text-gray-400">Source:</strong> Global Forest Watch</div>
-                <div><strong className="text-gray-400">Dataset:</strong> {forestStats.dataDescription || 'UMD Hansen et al.'}</div>
-                <div><strong className="text-gray-400">Resolution:</strong> 30m (Landsat)</div>
-              </div>
-            </div>
-          </div>
-        </aside>
-      )
-    )}
-  </>
-)}
-</div>
-
-
-      {/* Chat interface - NARROWER WIDTH, NO SUGGESTIONS */}
+      {/* Chat interface */}
       <div className={`absolute ${isChatExpanded ? 'bottom-0 left-1/2 -translate-x-1/2' : 'bottom-5 left-1/2 -translate-x-1/2'} z-50 w-full max-w-xl px-4 transition-all duration-300`}>
         <div className={`bg-slate-900/95 backdrop-blur-sm ${isChatExpanded ? 'rounded-t-xl' : 'rounded-xl'} shadow-2xl border border-slate-800 overflow-hidden`}>
           
@@ -1339,7 +1647,7 @@ try {
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleSendQuery()}
                 onFocus={() => setIsChatExpanded(true)}
-                placeholder="Ask about deforestation, fires, or drivers..." 
+                placeholder="Ask about deforestation, fires, floods, or drivers..." 
                 className="flex-1 h-10 px-3.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all"
                 disabled={isLoadingQuery}
               />
@@ -1366,8 +1674,6 @@ try {
                 </svg>
               </button>
             </div>
-
-            {/* REMOVED: Suggestion buttons are no longer rendered */}
           </div>
         </div>
       </div>
