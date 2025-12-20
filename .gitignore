@@ -6,15 +6,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.py[cod]
 .Python
-*.so
-
-# Virtual environments
-.env/
-.venv/
-env/
-ENV/
 
 # Database files
 *.db
@@ -28,19 +20,15 @@ backend/data/fires/historical/
 data/tiles/
 data/chroma/
 data/cache/
-backend-tree.txt
-frontend-tree.txt
 
 # Node.js
 node_modules/
 .next/
 npm-debug.log*
-package-lock.json
 
 # Environment files
 .env
 .env.local
-.env.production
 
 # Logs
 *.log
@@ -49,18 +37,10 @@ logs/
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Service account keys
+# Service accounts
 gee-service-account-key.json
-*-service-account-key.json
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
