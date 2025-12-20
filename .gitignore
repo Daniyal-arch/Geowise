@@ -1,73 +1,43 @@
-<<<<<<< HEAD
 ﻿# Python
 venv/
+venv*/
+venv311/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
+.Python
+*.so
+
+# Virtual environments
+.env/
+.venv/
+env/
+ENV/
+
+# Database files
 *.db
 *.sqlite
 *.sqlite3
 
+# Data files
+*.csv
+data/fires/historical/
+backend/data/fires/historical/
+data/tiles/
+data/chroma/
+data/cache/
+backend-tree.txt
+frontend-tree.txt
+
 # Node.js
 node_modules/
 .next/
-package-lock.json
 npm-debug.log*
+package-lock.json
 
-# Environment
-.env
-.env.local
-
-# Sensitive
-gee-service-account-key.json
-
-# Data
-data/fires/historical/
-
-# Logs
-logs/
-*.log
-
-# backend/.gitignore
-
-# Virtual environments
-venv*/
-venv311/
-.env/
-.venv/
-# Ignore environment files
-*.env
-
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Database
-*.db
-*.sqlite3
-geowise.db
-test_geowise.db
-
-# Environment variables
+# Environment files
 .env
 .env.local
 .env.production
@@ -75,26 +45,22 @@ test_geowise.db
 # Logs
 *.log
 logs/
- ca15793982fd75521e0f0b2cd3b28e4338e4c05b
 
 # IDE
 .vscode/
 .idea/
-<<<<<<< HEAD
-=======
 *.swp
 *.swo
-ca15793982fd75521e0f0b2cd3b28e4338e4c05b
+
+# Service account keys
+gee-service-account-key.json
+*-service-account-key.json
 
 # OS
 .DS_Store
 Thumbs.db
 
- HEAD
-backend/data/fires/historical/
-
-# Data directories
-data/tiles/
-data/chroma/
-data/cache/
-ca15793982fd75521e0f0b2cd3b28e4338e4c05b
+# Build artifacts
+build/
+dist/
+*.egg-info/
