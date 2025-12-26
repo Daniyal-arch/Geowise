@@ -13,9 +13,12 @@ from app.core.correlation import correlation_analyzer
 from app.services.nasa_firms import NASAFIRMSService
 from app.models.forest import ForestMonitor
 from app.models.climate import ClimateMonitor, ClimateService
+from app.llm.tools.urban_expansion_tool import analyze_urban_expansion
 from app.config import settings
 from app.utils.logger import get_logger
 from sqlalchemy import text
+from app.llm.tools.mpc_search_tool import search_mpc_images
+from app.llm.tools.surface_water_tool import analyze_surface_water
 
 logger = get_logger(__name__)
 
@@ -39,6 +42,7 @@ class LLMOrchestrator:
         self.forest_monitor = ForestMonitor()
         self.climate_monitor = ClimateMonitor()
         self.climate_service = ClimateService()
+        self.mpc_search_tool = search_mpc_images
         
         # v5.2: Track last flood result for follow-up requests
         self._last_flood_result: Optional[Dict] = None
@@ -50,7 +54,13 @@ class LLMOrchestrator:
         
         # v5.2: Convert to lowercase for trigger detection
         query_lower = user_query.lower()
-        
+        # MPC Query check
+        if self._is_mpc_query(query_lower):
+         result = await self._query_mpc_images(user_query)
+         if result.get("status") != "error":
+            report = await self.report_agent.generate_report(result)
+            result["report"] = report
+         return result
         # ─────────────────────────────────────────────────────────────────────
         # v5.2: CHECK FOR FLOOD FOLLOW-UP REQUESTS FIRST
         # ─────────────────────────────────────────────────────────────────────
@@ -138,6 +148,12 @@ class LLMOrchestrator:
             # v5.2: Store result for follow-up requests
             if result.get("status") == "success":
                 self._last_flood_result = result
+        elif intent == "query_urban_expansion":
+                result = await self._query_urban_expansion(parameters)
+
+        elif intent == "query_surface_water":
+            result = await self._query_surface_water(parameters)
+
                 
         elif intent == "generate_report":
             result = await self._generate_report(parameters)
@@ -199,7 +215,26 @@ class LLMOrchestrator:
             'optical image'
         ]
         return any(trigger in query for trigger in triggers)
-    
+    def _is_mpc_query(self, query: str) -> bool:
+        """Check if user is requesting MPC satellite imagery."""
+        triggers = [
+            'sentinel-2',
+            'sentinel 2',
+            'landsat',
+            'satellite imagery',
+            'satellite images',
+            'satellite data',
+            'hls',
+            'harmonized landsat',
+            'optical satellite',
+            'multispectral',
+            'find images',
+            'search images',
+            'available images',
+            'mpc',
+            'planetary computer'
+        ]
+        return any(trigger in query for trigger in triggers)
     # =========================================================================
     # v5.2: ON-DEMAND FLOOD STATISTICS
     # =========================================================================
@@ -920,7 +955,100 @@ class LLMOrchestrator:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
-    
+    async def _query_urban_expansion(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Query urban expansion analysis using GHSL data.
+        """
+        
+        location_name = parameters.get("location_name")
+        start_year = parameters.get("start_year", 1975)
+        end_year = parameters.get("end_year", 2020)
+        buffer_km = parameters.get("buffer_km")
+        include_animation = parameters.get("include_animation", True)
+        palette = parameters.get("palette", "neon")
+        
+        logger.info(f"🏙️ Urban expansion query: {location_name} ({start_year}-{end_year})")
+        
+        if not location_name:
+            return {
+                "status": "error",
+                "message": "Please specify a city for urban expansion analysis.",
+                "suggestion": "Try: 'Show urban growth in Dubai since 1975'"
+            }
+        
+        try:
+            # Call the tool
+            result = analyze_urban_expansion.invoke({
+                "location_name": location_name,
+                "start_year": start_year,
+                "end_year": end_year,
+                "buffer_km": buffer_km,
+                "palette": palette,
+                "include_animation": include_animation,
+                "include_population": True
+            })
+            
+            if not result.get("success"):
+                return {
+                    "status": "error",
+                    "message": result.get("error", "Urban expansion analysis failed"),
+                    "suggestion": result.get("suggestion", "Try a different city name")
+                }
+            
+            # Build response
+            location = result.get("location", {})
+            stats = result.get("statistics", {})
+            tiles = result.get("tiles", {})
+            animation = result.get("animation", {})
+            population = result.get("population", {})
+            map_config = result.get("map_config", {})
+            
+            return {
+                "status": "success",
+                "intent": "query_urban_expansion",
+                "data": {
+                    # Location
+                    "location_name": location.get("name"),
+                    "country": location.get("country"),
+                    "buffer_km": location.get("buffer_km"),
+                    
+                    # Map
+                    "center": map_config.get("center"),
+                    "zoom": map_config.get("zoom"),
+                    
+                    # Analysis period
+                    "start_year": result.get("analysis_period", {}).get("start_year"),
+                    "end_year": result.get("analysis_period", {}).get("end_year"),
+                    
+                    # Statistics
+                    "statistics": stats,
+                    
+                    # Tiles
+                    "tiles": tiles,
+                    
+                    # Animation
+                    "animation": animation,
+                    
+                    # Population
+                    "population": population,
+                    
+                    # Flags
+                    "show_urban": True,
+                    
+                    # Methodology
+                    "methodology": result.get("methodology"),
+                    "generated_at": result.get("generated_at")
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"🏙️ Urban expansion query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"Urban expansion analysis failed: {str(e)}"
+            }
     # =========================================================================
     # CORRELATION ANALYSIS
     # =========================================================================
@@ -1527,7 +1655,171 @@ class LLMOrchestrator:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
-    
+    # =========================================================================
+# MPC SATELLITE IMAGERY SEARCH
+# =========================================================================
+
+    async def _query_mpc_images(self, user_query: str) -> Dict[str, Any]:
+        """
+        Query Microsoft Planetary Computer for satellite imagery.
+        
+        Uses natural language location names and dates.
+        """
+        
+        try:
+            logger.info(f" MPC Query: {user_query}")
+            
+            # Parse query using query agent
+            parsed = await self.query_agent.parse_query(user_query)
+                # ═══════════════════════════════════════════════════════════════════════
+            # DEBUG: What did we get back?
+            # ═══════════════════════════════════════════════════════════════════════
+            logger.info(f"🔍 DEBUG Orchestrator received:")
+            logger.info(f"   Intent: {parsed.get('intent')}")
+            logger.info(f"   Parameters: {parsed.get('parameters')}")
+            logger.info(f"   Full parsed: {parsed}")
+            # ═══════════════════════════════════════════════════════════════════════
+            if parsed.get("error"):
+                return {
+                    "status": "error",
+                    "message": "Failed to understand MPC query",
+                    "error": parsed["error"]
+                }
+            
+            parameters = parsed.get("parameters", {})
+            
+            # Extract location
+            location = parameters.get("location_name") or parameters.get("country_iso")
+            
+            if not location:
+                return {
+                    "status": "error",
+                    "message": "Please specify a location for satellite imagery search",
+                    "suggestion": "Try: 'Find Sentinel-2 images of Lahore from August 2024'"
+                }
+            
+            # Determine collection
+            collection = "sentinel-2-l2a"  # Default
+            query_lower = user_query.lower()
+            
+            if "landsat" in query_lower:
+                collection = "landsat-c2-l2"
+            elif "hls" in query_lower or "harmonized" in query_lower:
+                collection = "hls"
+            
+            # Extract dates
+            start_date = parameters.get("start_date")
+            end_date = parameters.get("end_date")
+            
+            # If no dates, default to last 30 days
+            if not start_date or not end_date:
+                from datetime import datetime, timedelta
+                end = datetime.now()
+                start = end - timedelta(days=30)
+                start_date = start.strftime("%Y-%m-%d")
+                end_date = end.strftime("%Y-%m-%d")
+                logger.info(f"No dates specified, using last 30 days: {start_date} to {end_date}")
+            
+            # Country hint for geocoding
+            country_hint = None
+            country = parameters.get("country")
+            if country:
+                country_map = {
+                    "Pakistan": "PK",
+                    "India": "IN",
+                    "Bangladesh": "BD",
+                    "Sri Lanka": "LK"
+                }
+                country_hint = country_map.get(country)
+            
+            # Call MPC search tool
+            logger.info(f"Searching MPC: {location}, {collection}, {start_date} to {end_date}")
+            
+            result = self.mpc_search_tool.invoke({
+                "location_name": location,
+                "collection": collection,
+                "start_date": start_date,
+                "end_date": end_date,
+                "max_cloud_cover": 20,
+                "limit": 10,
+                "country_hint": country_hint
+            })
+            
+            if not result.get("success"):
+                return {
+                    "status": "error",
+                    "message": result.get("error", "MPC search failed"),
+                    "suggestion": result.get("suggestion", "Try a different location or date range")
+                }
+            
+            # Build response with MAP DATA
+            bbox = result.get("bbox", [])
+            images = result.get("images", [])
+            
+            # Calculate map center and zoom from bbox
+            if bbox and len(bbox) == 4:
+                center_lon = (bbox[0] + bbox[2]) / 2
+                center_lat = (bbox[1] + bbox[3]) / 2
+                
+                # Calculate zoom level based on bbox size
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+                max_dim = max(width, height)
+                
+                if max_dim > 5:
+                    zoom = 8
+                elif max_dim > 2:
+                    zoom = 9
+                elif max_dim > 1:
+                    zoom = 10
+                else:
+                    zoom = 11
+            else:
+                center_lon, center_lat, zoom = 0, 0, 2
+            
+            return {
+                "status": "success",
+                "intent": "query_mpc_images",
+                "data": {
+                    # Location info
+                    "location": result.get("location"),
+                    "bbox": bbox,
+                    "collection": result.get("collection"),
+                    "boundary": result.get("boundary"),
+                    "boundary_source": result.get("boundary_source"),
+                    "area_km2": result.get("area_km2"),
+
+                    # Map display
+                    "center": [center_lon, center_lat],
+                    "zoom": zoom,
+                    "show_mpc": True,  # Flag to show MPC layer
+                    
+                    # Image data
+                    "images_found": result.get("images_found"),
+                    "images": images,
+                    
+                    # Search params
+                    "query_params": {
+                        "dates": f"{start_date} to {end_date}",
+                        "max_cloud_cover": 20,
+                        "collection_name": {
+                            "sentinel-2-l2a": "Sentinel-2",
+                            "landsat-c2-l2": "Landsat 8/9",
+                            "hls": "HLS"
+                        }.get(result.get("collection"), result.get("collection"))
+                    },
+                    "message": result.get("message", "")
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"MPC query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"MPC search failed: {str(e)}"
+            }
     # =========================================================================
     # REAL-TIME FIRES & REPORTS
     # =========================================================================
@@ -1651,6 +1943,101 @@ class LLMOrchestrator:
         )
         
         return response.choices[0].message.content
+
+    async def _query_surface_water(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Query surface water change analysis using JRC Global Surface Water.
+        """
+        
+        location_name = parameters.get("location_name")
+        start_year = parameters.get("start_year", 1984)
+        end_year = parameters.get("end_year", 2021)
+        include_animation = parameters.get("include_animation", True)
+        animation_fps = parameters.get("animation_fps", 1.0)
+        
+        logger.info(f"💧 Surface water query: {location_name} ({start_year}-{end_year})")
+        
+        if not location_name:
+            return {
+                "status": "error",
+                "message": "Please specify a water body for surface water analysis.",
+                "suggestion": "Try: 'Show water changes in Aral Sea' or 'Lake Chad water loss'"
+            }
+        
+        try:
+            # Call the tool
+            result = analyze_surface_water.invoke({
+                "location_name": location_name,
+                "start_year": start_year,
+                "end_year": end_year,
+                "include_animation": include_animation,
+                "animation_fps": animation_fps
+            })
+            
+            if not result.get("success"):
+                return {
+                    "status": "error",
+                    "message": result.get("error", "Surface water analysis failed"),
+                    "suggestion": result.get("suggestion", "Try a different water body name"),
+                    "available_water_bodies": result.get("available_water_bodies", [])
+                }
+            
+            # Build response
+            location = result.get("location", {})
+            stats = result.get("statistics", {})
+            tiles = result.get("tiles", {})
+            animation = result.get("animation")
+            map_config = result.get("map_config", {})
+            time_series = result.get("time_series", [])
+            
+            return {
+                "status": "success",
+                "intent": "query_surface_water",
+                "data": {
+                    # Location
+                    "location_name": location.get("name"),
+                    "country": location.get("country"),
+                    "water_body_type": location.get("type"),
+                    "description": location.get("description"),
+                    
+                    # Map
+                    "center": map_config.get("center"),
+                    "zoom": map_config.get("zoom"),
+                    "bounds": map_config.get("bounds"),
+                    
+                    # Analysis period
+                    "start_year": result.get("analysis_period", {}).get("start_year"),
+                    "end_year": result.get("analysis_period", {}).get("end_year"),
+                    
+                    # Statistics
+                    "statistics": stats,
+                    
+                    # Time series
+                    "time_series": time_series,
+                    
+                    # Tiles
+                    "tiles": tiles,
+                    
+                    # Animation
+                    "animation": animation,
+                    
+                    # Flags
+                    "show_water": True,
+                    
+                    # Methodology
+                    "methodology": result.get("methodology"),
+                    "generated_at": result.get("generated_at")
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"💧 Surface water query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"Surface water analysis failed: {str(e)}"
+            }
 
 
 orchestrator = LLMOrchestrator()

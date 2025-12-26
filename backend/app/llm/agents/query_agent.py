@@ -130,7 +130,13 @@ class QueryAgent:
             Enhanced parsed result with corrected intent
         """
         query_lower = user_query.lower()
-        
+            # ═══════════════════════════════════════════════════════════════════════
+        # DEBUG: Check what LLM returned and what we're detecting
+        # ═══════════════════════════════════════════════════════════════════════
+        logger.info(f"🔍 DEBUG _enhance_intent_detection")
+        logger.info(f"   Query: {query_lower}")
+        logger.info(f"   LLM returned intent: {parsed.get('intent')}")
+        logger.info(f"   LLM returned params: {parsed.get('parameters')}")
         # Pattern 1: Monthly breakdown queries (HIGHEST PRIORITY)
         monthly_keywords = ["peak", "highest", "most", "monthly", "month", "breakdown", "per month"]
         if any(keyword in query_lower for keyword in monthly_keywords):
@@ -155,7 +161,7 @@ class QueryAgent:
             "show drivers", "show causes", "show me drivers", "show me causes",
             "deforestation cause", "deforestation driver", "forest loss cause",
             "tree loss cause", "agriculture", "logging", "farming", "cattle",
-            "palm oil", "soy", "urban", "fire driver"
+            "palm oil", "soy", "fire driver"
         ]
         
         has_driver_intent = any(keyword in query_lower for keyword in driver_keywords)
@@ -195,7 +201,96 @@ class QueryAgent:
             parsed["parameters"].update(flood_params)
             return parsed
         # ═══════════════════════════════════════════════════════════════════════
+        # ═══════════════════════════════════════════════════════════════════════
+        # Pattern 4.1: MPC SATELLITE IMAGERY QUERIES 🛰️
+        # ═══════════════════════════════════════════════════════════════════════
+        mpc_keywords = [
+            "sentinel-2", "sentinel 2", "landsat", "satellite imagery",
+            "satellite images", "satellite data", "hls", "harmonized landsat",
+            "optical satellite", "multispectral", "find images", "search images",
+            "available images", "planetary computer", "mpc"
+        ]
+
+        has_mpc_intent = any(keyword in query_lower for keyword in mpc_keywords)
+
+        if has_mpc_intent:
+            logger.info("Rule-based detection: MPC satellite imagery query 🛰️")
+            parsed["intent"] = "query_mpc_images"
+            # Extract MPC-specific parameters
+            parsed["parameters"] = parsed.get("parameters", {})
+            mpc_params = self._extract_mpc_parameters(user_query)
+            parsed["parameters"].update(mpc_params)
+            return parsed
+        # Add after flood detection pattern (around line 120):
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Pattern 4.2: URBAN EXPANSION QUERIES 🏙️
+        # ═══════════════════════════════════════════════════════════════════════
+
+        urban_keywords = [
+            "urban", "city growth", "city expansion", "urban expansion",
+            "urban growth", "urbanization", "urbanisation", "built-up",
+            "built up", "sprawl", "urban sprawl", "city sprawl",
+            "how has", "grown", "expanded", "expansion",
+            "settlement", "development", "urban development"
+        ]
+
+        city_indicators = [
+            "city", "cities", "town", "metropolitan", "metro"
+        ]
+
+        has_urban_intent = any(keyword in query_lower for keyword in urban_keywords)
+        has_city_context = any(keyword in query_lower for keyword in city_indicators)
+
+        # Also check for known city names
+        known_cities = [
+            "dubai", "lahore", "karachi", "mumbai", "delhi", "beijing",
+            "shanghai", "tokyo", "singapore", "riyadh", "london", "paris",
+            "new york", "los angeles", "cairo", "lagos"
+        ]
+        has_city_name = any(city in query_lower for city in known_cities)
+
+        if has_urban_intent or (has_city_context and has_city_name):
+            logger.info("Rule-based detection: Urban expansion query 🏙️")
+            parsed["intent"] = "query_urban_expansion"
+            parsed["parameters"] = parsed.get("parameters", {})
+            urban_params = self._extract_urban_parameters(user_query)
+            parsed["parameters"].update(urban_params)
+            return parsed
         
+        # ═══════════════════════════════════════════════════════════════════════════
+        # Pattern 4.3: SURFACE WATER QUERIES 💧
+        # ═══════════════════════════════════════════════════════════════════════════
+
+        water_keywords = [
+            # Water body terms
+            "lake", "sea", "reservoir", "dam", "river", "delta",
+            "water body", "water level", "water extent",
+            # Analysis terms
+            "water change", "water loss", "shrinking", "drying",
+            "dried up", "water area", "surface water",
+            # Specific phenomena
+            "drought impact", "water retreat", "shoreline change"
+        ]
+
+        known_water_bodies = [
+            "aral", "chad", "urmia", "dead sea", "mead", "powell",
+            "poopo", "balkhash", "turkana", "titicaca", "victoria",
+            "nasser", "three gorges", "indus delta", "ganges delta",
+            "mekong delta", "caspian", "salton"
+        ]
+
+        has_water_keyword = any(keyword in query_lower for keyword in water_keywords)
+        has_water_body = any(wb in query_lower for wb in known_water_bodies)
+
+        if has_water_keyword or has_water_body:
+            logger.info("Rule-based detection: Surface water query 💧")
+            parsed["intent"] = "query_surface_water"
+            parsed["parameters"] = parsed.get("parameters", {})
+            water_params = self._extract_water_parameters(user_query)
+            parsed["parameters"].update(water_params)
+            return parsed
+        # ═══════════════════════════════════════════════════════════════════════
         # Pattern 5: Real-time fire queries
         realtime_keywords = ["real-time", "realtime", "live", "current", "today", "now", "active"]
         fire_keywords_simple = ["fire", "fires", "burning"]
@@ -463,7 +558,114 @@ class QueryAgent:
             params["buffer_km"] = float(buffer_match.group(1))
         
         return params
-    
+    def _extract_urban_parameters(self, user_query: str) -> Dict[str, Any]:
+        """Extract urban expansion parameters from query."""
+        
+        query_lower = user_query.lower()
+        params = {}
+        
+        # Extract city name
+        known_cities = {
+            "dubai": "Dubai", "lahore": "Lahore", "karachi": "Karachi",
+            "islamabad": "Islamabad", "mumbai": "Mumbai", "delhi": "Delhi",
+            "beijing": "Beijing", "shanghai": "Shanghai", "tokyo": "Tokyo",
+            "singapore": "Singapore", "riyadh": "Riyadh", "london": "London",
+            "paris": "Paris", "new york": "New York", "los angeles": "Los Angeles",
+            "cairo": "Cairo", "lagos": "Lagos", "nairobi": "Nairobi",
+            "johannesburg": "Johannesburg", "sao paulo": "São Paulo"
+        }
+        
+        for city_key, city_name in known_cities.items():
+            if city_key in query_lower:
+                params["location_name"] = city_name
+                break
+        
+        # Extract years
+        years = re.findall(r'\b(19[789]\d|20[012]\d)\b', user_query)
+        
+        if len(years) >= 2:
+            params["start_year"] = int(min(years))
+            params["end_year"] = int(max(years))
+        elif len(years) == 1:
+            year = int(years[0])
+            if year < 2000:
+                params["start_year"] = year
+                params["end_year"] = 2020
+            else:
+                params["start_year"] = 1975
+                params["end_year"] = year
+        else:
+            params["start_year"] = 1975
+            params["end_year"] = 2020
+        
+        # Check for animation request
+        if any(kw in query_lower for kw in ["animation", "animate", "timelapse", "time-lapse", "gif"]):
+            params["include_animation"] = True
+        
+        return params
+    def _extract_mpc_parameters(self, user_query: str) -> Dict[str, Any]:
+        """
+        Extract MPC search parameters from natural language query.
+        
+        Extracts:
+        - location_name: Place name
+        - start_date, end_date: Date range
+        - collection: Satellite collection
+        """
+        query_lower = user_query.lower()
+        params = {}
+        
+        # Extract dates
+        year_match = re.search(r'\b(20\d{2})\b', user_query)
+        
+        if year_match:
+            year = year_match.group(1)
+            
+            # Month patterns
+            month_patterns = {
+                'january': '01', 'february': '02', 'march': '03', 'april': '04',
+                'may': '05', 'june': '06', 'july': '07', 'august': '08',
+                'september': '09', 'october': '10', 'november': '11', 'december': '12',
+                'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
+                'jun': '06', 'jul': '07', 'aug': '08', 'sep': '09',
+                'oct': '10', 'nov': '11', 'dec': '12'
+            }
+            
+            month = None
+            for month_name, month_num in month_patterns.items():
+                if month_name in query_lower:
+                    month = month_num
+                    break
+            
+            if month:
+                # Specific month
+                params["start_date"] = f"{year}-{month}-01"
+                params["end_date"] = f"{year}-{month}-28"
+            else:
+                # Whole year
+                params["start_date"] = f"{year}-01-01"
+                params["end_date"] = f"{year}-12-31"
+            
+            params["year"] = int(year)
+        
+        # Extract location
+        location_patterns = [
+            r'images?\s+of\s+([a-zA-Z\s]+?)(?:\s+from|\s+in\s+\d{4}|\s*$)',
+            r'imagery\s+for\s+([a-zA-Z\s]+?)(?:\s+from|\s+in\s+\d{4}|\s*$)',
+            r'data\s+(?:of|for)\s+([a-zA-Z\s]+?)(?:\s+from|\s+in\s+\d{4}|\s*$)',
+        ]
+        
+        for pattern in location_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                location = match.group(1).strip()
+                # Clean up
+                location = re.sub(r'\b(the|show|find|search|get)\b', '', location).strip()
+                if location and len(location) > 2:
+                    params["location_name"] = location.title()
+                    break
+        
+        return params
     def _extract_year(self, user_query: str) -> Optional[int]:
         """
         Extract year from query using regex fallback
@@ -509,3 +711,69 @@ class QueryAgent:
         
         logger.info("Using default FRP threshold: 100 MW")
         return 100
+
+    def _extract_water_parameters(self, user_query: str) -> Dict[str, Any]:
+        """Extract surface water parameters from query."""
+        
+        query_lower = user_query.lower()
+        params = {}
+        
+        # Known water bodies mapping
+        water_bodies = {
+            "aral": "Aral Sea", "aral sea": "Aral Sea",
+            "chad": "Lake Chad", "lake chad": "Lake Chad",
+            "urmia": "Lake Urmia", "lake urmia": "Lake Urmia",
+            "dead sea": "Dead Sea",
+            "mead": "Lake Mead", "lake mead": "Lake Mead",
+            "powell": "Lake Powell", "lake powell": "Lake Powell",
+            "poopo": "Lake Poopo", "lake poopo": "Lake Poopo",
+            "balkhash": "Lake Balkhash", "lake balkhash": "Lake Balkhash",
+            "turkana": "Lake Turkana", "lake turkana": "Lake Turkana",
+            "titicaca": "Lake Titicaca", "lake titicaca": "Lake Titicaca",
+            "victoria": "Lake Victoria", "lake victoria": "Lake Victoria",
+            "nasser": "Lake Nasser", "lake nasser": "Lake Nasser",
+            "three gorges": "Three Gorges",
+            "indus delta": "Indus Delta",
+            "ganges delta": "Ganges Delta",
+            "mekong delta": "Mekong Delta",
+            "caspian": "Caspian Sea", "caspian sea": "Caspian Sea",
+            "salton": "Salton Sea", "salton sea": "Salton Sea"
+        }
+        
+        # Find water body name
+        for key, name in water_bodies.items():
+            if key in query_lower:
+                params["location_name"] = name
+                break
+        
+        # Extract years
+        years = re.findall(r'\\b(19[89]\\d|20[012]\\d)\\b', user_query)
+        
+        if len(years) >= 2:
+            params["start_year"] = int(min(years))
+            params["end_year"] = int(max(years))
+        elif len(years) == 1:
+            year = int(years[0])
+            if year < 2000:
+                params["start_year"] = year
+                params["end_year"] = 2021
+            else:
+                params["start_year"] = 1984
+                params["end_year"] = year
+        else:
+            params["start_year"] = 1984
+            params["end_year"] = 2021
+        
+        # Check for animation request
+        if any(kw in query_lower for kw in ["animation", "animate", "timelapse", "time-lapse", "gif", "over time"]):
+            params["include_animation"] = True
+        else:
+            params["include_animation"] = True  # Default to true
+        
+        # Check for slow animation request
+        if any(kw in query_lower for kw in ["slow", "slowly", "detailed"]):
+            params["animation_fps"] = 0.5
+        else:
+            params["animation_fps"] = 1.0
+        
+        return params
