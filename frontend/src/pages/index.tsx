@@ -20,7 +20,18 @@ import {
   removeDriverLayer,
   hasDriverLayer 
 } from '@/services/datasets/hansenForest';
-import type { LayerVisibility, DriverTiles } from '@/types/gee'; 
+import type { LayerVisibility, DriverTiles } from '@/types/gee';
+// ============================================================================
+// 🛰️ MPC MODULE IMPORTS
+// ============================================================================
+import { MPCStatsPanel } from '@/components/MPCStatsPanel';
+import { 
+  addMPCLayers, 
+  removeMPCLayers, 
+  flyToMPCLocation 
+} from '@/utils/mpcMapLayers';
+import type { MPCNLPResponse } from '@/types/mpc';
+import { getCollectionColor } from '@/types/mpc';
 
 // ============================================================================
 // 🌊 FLOOD MODULE IMPORTS
@@ -54,6 +65,11 @@ export default function Dashboard() {
   const [isLoadingQuery, setIsLoadingQuery] = useState(false);
   const [isChatExpanded, setIsChatExpanded] = useState(false);
   const [hasQueried, setHasQueried] = useState(false);
+  
+  // ============================================================================
+  // 🛰️ MPC STATE
+  // ============================================================================
+  const [mpcData, setMpcData] = useState<MPCNLPResponse['data'] | null>(null);
 
   const [availableLayers, setAvailableLayers] = useState<string[]>([]);
   
@@ -93,11 +109,13 @@ export default function Dashboard() {
     flatten(coords);
     return result;
   };
+  
   //  Boundary layer tracking  
   const [showBoundary, setShowBoundary] = useState(false);
   const BOUNDARY_SOURCE_ID = 'country-boundary-source';
   const BOUNDARY_FILL_ID = 'country-boundary-fill';
   const BOUNDARY_LINE_ID = 'country-boundary-line';
+  
   const [forestStats, setForestStats] = useState<{
     totalLoss: number;
     recentYear: number;
@@ -193,7 +211,6 @@ export default function Dashboard() {
   useEffect(() => {
     if (!map.current || !mapLoaded || !floodData?.tiles) return;
 
-    // Get all layer keys from floodLayers state
     const allLayerKeys = Object.keys(floodLayers) as (keyof FloodLayerState)[];
     
     allLayerKeys.forEach((layerKey) => {
@@ -216,7 +233,6 @@ export default function Dashboard() {
     const allOpacityKeys = Object.keys(floodOpacity) as (keyof FloodLayerOpacity)[];
     
     allOpacityKeys.forEach((layerKey) => {
-      // Only update opacity if the layer is visible
       const stateKey = layerKey as keyof FloodLayerState;
       if (floodLayers[stateKey]) {
         updateFloodLayerOpacity(map.current!, layerKey, floodOpacity[layerKey]);
@@ -273,6 +289,16 @@ export default function Dashboard() {
     setFloodLayers(DEFAULT_FLOOD_LAYERS);
     setFloodOpacity(DEFAULT_FLOOD_OPACITY);
   };
+  
+  // ============================================================================
+  // 🛰️ CLEAR MPC DATA HELPER
+  // ============================================================================
+  const clearMPCData = () => {
+    if (map.current) {
+      removeMPCLayers(map.current);
+    }
+    setMpcData(null);
+  };
 
   // ============================================================================
   // 🌊 FLOOD SUB-REGION CLICK HANDLER
@@ -280,144 +306,137 @@ export default function Dashboard() {
   const handleFloodSubRegionClick = (regionName: string, regionType: string) => {
     console.log('[Dashboard] 🌊 Sub-region clicked:', regionName, regionType);
     
-    // Get the current flood dates from floodData
     const afterDate = floodData?.dates?.after?.start || '';
     const yearMonth = afterDate ? afterDate.substring(0, 7).replace('-', ' ') : 'August 2022';
     
-    // Build the new query
     const newQuery = `Show floods in ${regionName} ${regionType} ${yearMonth}`;
     
-    // Set chat input and expand chat
     setChatInput(newQuery);
     setIsChatExpanded(true);
   };
 
   //  country boundary visualization
-const addCountryBoundary = async (countryCode: string) => {
-  if (!map.current || !mapLoaded) return;
-  
-  try {
-    console.log('[Boundary] Loading spotlight for:', countryCode);
+  const addCountryBoundary = async (countryCode: string) => {
+    if (!map.current || !mapLoaded) return;
     
-    removeCountryBoundary();
-    
-    const boundaryData = await getCountryBoundary(countryCode);
-    if (!boundaryData) return;
-    
-    // Add country boundary source
-    if (!map.current.getSource(BOUNDARY_SOURCE_ID)) {
-      map.current.addSource(BOUNDARY_SOURCE_ID, {
-        type: 'geojson',
-        data: boundaryData
-      });
-    } else {
-      (map.current.getSource(BOUNDARY_SOURCE_ID) as maplibregl.GeoJSONSource).setData(boundaryData);
-    }
-    
-    // Layer 1: Global darkening (VERY SUBTLE - just 10%)
-    const GLOBAL_DARK_ID = 'global-darken';
-    
-    if (!map.current.getSource(GLOBAL_DARK_ID)) {
-      const worldPolygon = {
-        type: 'FeatureCollection' as const,
-        features: [{
-          type: 'Feature' as const,
-          properties: {},
-          geometry: {
-            type: 'Polygon' as const,
-            coordinates: [[
-              [-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]
-            ]]
-          }
-        }]
-      };
+    try {
+      console.log('[Boundary] Loading spotlight for:', countryCode);
       
-      map.current.addSource(GLOBAL_DARK_ID, {
-        type: 'geojson',
-        data: worldPolygon
-      });
+      removeCountryBoundary();
       
-      map.current.addLayer({
-        id: GLOBAL_DARK_ID,
-        type: 'fill',
-        source: GLOBAL_DARK_ID,
-        paint: {
-          'fill-color': '#000000',
-          'fill-opacity': 0.10
-        }
-      });
-    }
-    
-    // Layer 2: Sharp white border ONLY
-    if (!map.current.getLayer(BOUNDARY_LINE_ID)) {
-      map.current.addLayer({
-        id: BOUNDARY_LINE_ID,
-        type: 'line',
-        source: BOUNDARY_SOURCE_ID,
-        paint: {
-          'line-color': '#FFFFFF',
-          'line-width': 2.0,
-          'line-opacity': 0.85,
-          'line-blur': 0.3
-        }
-      });
-    }
-    
-    // Zoom to fit
-    const geometry = boundaryData.features[0]?.geometry;
-    if (geometry?.coordinates) {
-      const coordinates = flattenCoordinates(geometry.coordinates);
+      const boundaryData = await getCountryBoundary(countryCode);
+      if (!boundaryData) return;
       
-      if (coordinates.length > 0) {
-        const bbox = coordinates.reduce(
-          (bounds, coord) => [
-            Math.min(bounds[0], coord[0]),
-            Math.min(bounds[1], coord[1]),
-            Math.max(bounds[2], coord[0]),
-            Math.max(bounds[3], coord[1])
-          ],
-          [Infinity, Infinity, -Infinity, -Infinity]
-        );
-        
-        map.current.fitBounds(
-          [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
-          {
-            padding: { top: 80, bottom: 80, left: 80, right: 400 },
-            duration: 2000,
-            maxZoom: 7
-          }
-        );
+      if (!map.current.getSource(BOUNDARY_SOURCE_ID)) {
+        map.current.addSource(BOUNDARY_SOURCE_ID, {
+          type: 'geojson',
+          data: boundaryData
+        });
+      } else {
+        (map.current.getSource(BOUNDARY_SOURCE_ID) as maplibregl.GeoJSONSource).setData(boundaryData);
       }
+      
+      const GLOBAL_DARK_ID = 'global-darken';
+      
+      if (!map.current.getSource(GLOBAL_DARK_ID)) {
+        const worldPolygon = {
+          type: 'FeatureCollection' as const,
+          features: [{
+            type: 'Feature' as const,
+            properties: {},
+            geometry: {
+              type: 'Polygon' as const,
+              coordinates: [[
+                [-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]
+              ]]
+            }
+          }]
+        };
+        
+        map.current.addSource(GLOBAL_DARK_ID, {
+          type: 'geojson',
+          data: worldPolygon
+        });
+        
+        map.current.addLayer({
+          id: GLOBAL_DARK_ID,
+          type: 'fill',
+          source: GLOBAL_DARK_ID,
+          paint: {
+            'fill-color': '#000000',
+            'fill-opacity': 0.10
+          }
+        });
+      }
+      
+      if (!map.current.getLayer(BOUNDARY_LINE_ID)) {
+        map.current.addLayer({
+          id: BOUNDARY_LINE_ID,
+          type: 'line',
+          source: BOUNDARY_SOURCE_ID,
+          paint: {
+            'line-color': '#FFFFFF',
+            'line-width': 2.0,
+            'line-opacity': 0.85,
+            'line-blur': 0.3
+          }
+        });
+      }
+      
+      const geometry = boundaryData.features[0]?.geometry;
+      if (geometry?.coordinates) {
+        const coordinates = flattenCoordinates(geometry.coordinates);
+        
+        if (coordinates.length > 0) {
+          const bbox = coordinates.reduce(
+            (bounds, coord) => [
+              Math.min(bounds[0], coord[0]),
+              Math.min(bounds[1], coord[1]),
+              Math.max(bounds[2], coord[0]),
+              Math.max(bounds[3], coord[1])
+            ],
+            [Infinity, Infinity, -Infinity, -Infinity]
+          );
+          
+          map.current.fitBounds(
+            [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
+            {
+              padding: { top: 80, bottom: 80, left: 80, right: 400 },
+              duration: 2000,
+              maxZoom: 7
+            }
+          );
+        }
+      }
+      
+      setShowBoundary(true);
+      console.log('[Boundary] ✅ Clean border added');
+      
+    } catch (error) {
+      console.error('[Boundary] Error:', error);
     }
-    
-    setShowBoundary(true);
-    console.log('[Boundary] ✅ Clean border added');
-    
-  } catch (error) {
-    console.error('[Boundary] Error:', error);
-  }
-};
+  };
 
   //  Remove country boundary
-const removeCountryBoundary = () => {
-  if (!map.current) return;
-  
-  const GLOBAL_DARK_ID = 'global-darken';
-  
-  [BOUNDARY_LINE_ID, BOUNDARY_FILL_ID, GLOBAL_DARK_ID].forEach(id => {
-    if (map.current!.getLayer(id)) {
-      map.current!.removeLayer(id);
-    }
-  });
-  
-  [BOUNDARY_SOURCE_ID, GLOBAL_DARK_ID].forEach(id => {
-    if (map.current!.getSource(id)) {
-      map.current!.removeSource(id);
-    }
-  });
-  
-  setShowBoundary(false);
-};
+  const removeCountryBoundary = () => {
+    if (!map.current) return;
+    
+    const GLOBAL_DARK_ID = 'global-darken';
+    
+    [BOUNDARY_LINE_ID, BOUNDARY_FILL_ID, GLOBAL_DARK_ID].forEach(id => {
+      if (map.current!.getLayer(id)) {
+        map.current!.removeLayer(id);
+      }
+    });
+    
+    [BOUNDARY_SOURCE_ID, GLOBAL_DARK_ID].forEach(id => {
+      if (map.current!.getSource(id)) {
+        map.current!.removeSource(id);
+      }
+    });
+    
+    setShowBoundary(false);
+  };
 
   // Toggle boundary visibility
   const toggleBoundaryVisibility = (visible: boolean) => {
@@ -435,176 +454,170 @@ const removeCountryBoundary = () => {
   };
   
   // 🔥 Fire marker management
-const FIRE_SOURCE_ID = 'fires-source';
-const FIRE_LAYER_ID = 'fires-layer';
+  const FIRE_SOURCE_ID = 'fires-source';
+  const FIRE_LAYER_ID = 'fires-layer';
 
-const addFireMarkers = (fires: any[]) => {
-  if (!map.current || !mapLoaded) return;
-  
-  console.log('[Fire] Adding fire markers:', fires.length);
-  
-  // Remove existing fire layer
-  removeFireMarkers();
-  
-  // Create GeoJSON from fires
-  const fireGeoJSON = {
-    type: 'FeatureCollection' as const,
-    features: fires.map(fire => ({
-      type: 'Feature' as const,
-      properties: {
-        id: fire.id,
-        confidence: fire.confidence,
-        frp: fire.frp || 0,
-        brightness: fire.brightness,
-        satellite: fire.satellite,
-        acq_time: fire.acq_time,
-        daynight: fire.daynight
-      },
-      geometry: {
-        type: 'Point' as const,
-        coordinates: [fire.longitude, fire.latitude]
+  const addFireMarkers = (fires: any[]) => {
+    if (!map.current || !mapLoaded) return;
+    
+    console.log('[Fire] Adding fire markers:', fires.length);
+    
+    removeFireMarkers();
+    
+    const fireGeoJSON = {
+      type: 'FeatureCollection' as const,
+      features: fires.map(fire => ({
+        type: 'Feature' as const,
+        properties: {
+          id: fire.id,
+          confidence: fire.confidence,
+          frp: fire.frp || 0,
+          brightness: fire.brightness,
+          satellite: fire.satellite,
+          acq_time: fire.acq_time,
+          daynight: fire.daynight
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [fire.longitude, fire.latitude]
+        }
+      }))
+    };
+    
+    map.current.addSource(FIRE_SOURCE_ID, {
+      type: 'geojson',
+      data: fireGeoJSON
+    });
+    
+    map.current.addLayer({
+      id: FIRE_LAYER_ID,
+      type: 'circle',
+      source: FIRE_SOURCE_ID,
+      paint: {
+        'circle-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          0, 1.5,
+          5, 2,
+          8, 3,
+          12, 4,
+          16, 5
+        ],
+        'circle-color': [
+          'match',
+          ['get', 'confidence'],
+          'h', '#FF0000',
+          'n', '#FF6B00',
+          'l', '#FFAA00',
+          '#FF6B00'
+        ],
+        'circle-opacity': 0.8,
+        'circle-stroke-width': 0.5,
+        'circle-stroke-color': '#FFFFFF',
+        'circle-stroke-opacity': 0.4
       }
-    }))
+    });
+    
+    map.current.on('click', FIRE_LAYER_ID, (e: any) => {
+      if (!e.features || e.features.length === 0) return;
+      
+      const fire = e.features[0].properties;
+      
+      const popupHTML = `
+    <div style="
+      padding: 12px; 
+      min-width: 220px; 
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border-radius: 8px;
+      border: 2px solid #f97316;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    ">
+      <div style="
+        font-weight: bold; 
+        margin-bottom: 8px; 
+        color: #fb923c;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      ">
+        <span style="font-size: 16px;">🔥</span> Fire Detection
+      </div>
+      <div style="
+        font-size: 12px; 
+        line-height: 1.7;
+        color: #e2e8f0;
+      ">
+        <div style="margin-bottom: 4px;">
+          <strong style="color: #cbd5e1;">Confidence:</strong> 
+          <span style="color: ${fire.confidence === 'h' ? '#ef4444' : fire.confidence === 'n' ? '#f97316' : '#fbbf24'}; font-weight: 600;">
+            ${fire.confidence === 'h' ? 'High' : fire.confidence === 'n' ? 'Nominal' : 'Low'}
+          </span>
+        </div>
+        <div style="margin-bottom: 4px;">
+          <strong style="color: #cbd5e1;">FRP:</strong> 
+          <span style="color: #fb923c; font-weight: 600;">${fire.frp} MW</span>
+        </div>
+        <div style="margin-bottom: 4px;">
+          <strong style="color: #cbd5e1;">Brightness:</strong> 
+          <span style="color: #fbbf24; font-weight: 600;">${fire.brightness} K</span>
+        </div>
+        <div style="margin-bottom: 4px;">
+          <strong style="color: #cbd5e1;">Time:</strong> 
+          <span style="color: #e2e8f0;">${fire.acq_time} ${fire.daynight === 'D' ? '☀️ Day' : '🌙 Night'}</span>
+        </div>
+        <div>
+          <strong style="color: #cbd5e1;">Satellite:</strong> 
+          <span style="color: #94a3b8;">${fire.satellite}</span>
+        </div>
+      </div>
+    </div>
+  `;
+      
+      new maplibregl.Popup()
+        .setLngLat(e.lngLat)
+        .setHTML(popupHTML)
+        .addTo(map.current!);
+    });
+    
+    map.current.on('mouseenter', FIRE_LAYER_ID, () => {
+      if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+    });
+    
+    map.current.on('mouseleave', FIRE_LAYER_ID, () => {
+      if (map.current) map.current.getCanvas().style.cursor = '';
+    });
+    
+    console.log('[Fire] ✅ Fire markers added (FIRMS style)');
   };
-  
-  // Add source
-  map.current.addSource(FIRE_SOURCE_ID, {
-    type: 'geojson',
-    data: fireGeoJSON
-  });
-  
-  // Add circle layer - SMALL CONSISTENT DOTS like NASA FIRMS
-  map.current.addLayer({
-    id: FIRE_LAYER_ID,
-    type: 'circle',
-    source: FIRE_SOURCE_ID,
-    paint: {
-      'circle-radius': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        0, 1.5,
-        5, 2,
-        8, 3,
-        12, 4,
-        16, 5
-      ],
-      'circle-color': [
-        'match',
-        ['get', 'confidence'],
-        'h', '#FF0000',
-        'n', '#FF6B00',
-        'l', '#FFAA00',
-        '#FF6B00'
-      ],
-      'circle-opacity': 0.8,
-      'circle-stroke-width': 0.5,
-      'circle-stroke-color': '#FFFFFF',
-      'circle-stroke-opacity': 0.4
-    }
-  });
-  
-  // Add popup on click
-  map.current.on('click', FIRE_LAYER_ID, (e: any) => {
-    if (!e.features || e.features.length === 0) return;
-    
-    const fire = e.features[0].properties;
-    
-    const popupHTML = `
-  <div style="
-    padding: 12px; 
-    min-width: 220px; 
-    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-    border-radius: 8px;
-    border: 2px solid #f97316;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-  ">
-    <div style="
-      font-weight: bold; 
-      margin-bottom: 8px; 
-      color: #fb923c;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    ">
-      <span style="font-size: 16px;">🔥</span> Fire Detection
-    </div>
-    <div style="
-      font-size: 12px; 
-      line-height: 1.7;
-      color: #e2e8f0;
-    ">
-      <div style="margin-bottom: 4px;">
-        <strong style="color: #cbd5e1;">Confidence:</strong> 
-        <span style="color: ${fire.confidence === 'h' ? '#ef4444' : fire.confidence === 'n' ? '#f97316' : '#fbbf24'}; font-weight: 600;">
-          ${fire.confidence === 'h' ? 'High' : fire.confidence === 'n' ? 'Nominal' : 'Low'}
-        </span>
-      </div>
-      <div style="margin-bottom: 4px;">
-        <strong style="color: #cbd5e1;">FRP:</strong> 
-        <span style="color: #fb923c; font-weight: 600;">${fire.frp} MW</span>
-      </div>
-      <div style="margin-bottom: 4px;">
-        <strong style="color: #cbd5e1;">Brightness:</strong> 
-        <span style="color: #fbbf24; font-weight: 600;">${fire.brightness} K</span>
-      </div>
-      <div style="margin-bottom: 4px;">
-        <strong style="color: #cbd5e1;">Time:</strong> 
-        <span style="color: #e2e8f0;">${fire.acq_time} ${fire.daynight === 'D' ? '☀️ Day' : '🌙 Night'}</span>
-      </div>
-      <div>
-        <strong style="color: #cbd5e1;">Satellite:</strong> 
-        <span style="color: #94a3b8;">${fire.satellite}</span>
-      </div>
-    </div>
-  </div>
-`;
-    
-    new maplibregl.Popup()
-      .setLngLat(e.lngLat)
-      .setHTML(popupHTML)
-      .addTo(map.current!);
-  });
-  
-  // Change cursor on hover
-  map.current.on('mouseenter', FIRE_LAYER_ID, () => {
-    if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-  });
-  
-  map.current.on('mouseleave', FIRE_LAYER_ID, () => {
-    if (map.current) map.current.getCanvas().style.cursor = '';
-  });
-  
-  console.log('[Fire] ✅ Fire markers added (FIRMS style)');
-};
 
-const removeFireMarkers = () => {
-  if (!map.current) return;
-  
-  const layersToRemove = [
-    'fires-heatmap',
-    'fires-clusters',
-    'fires-cluster-count',
-    FIRE_LAYER_ID
-  ];
-  
-  layersToRemove.forEach(layerId => {
-    if (map.current!.getLayer(layerId)) {
-      map.current!.removeLayer(layerId);
+  const removeFireMarkers = () => {
+    if (!map.current) return;
+    
+    const layersToRemove = [
+      'fires-heatmap',
+      'fires-clusters',
+      'fires-cluster-count',
+      FIRE_LAYER_ID
+    ];
+    
+    layersToRemove.forEach(layerId => {
+      if (map.current!.getLayer(layerId)) {
+        map.current!.removeLayer(layerId);
+      }
+    });
+    
+    if (map.current.getSource(FIRE_SOURCE_ID)) {
+      map.current.removeSource(FIRE_SOURCE_ID);
     }
-  });
-  
-  if (map.current.getSource(FIRE_SOURCE_ID)) {
-    map.current.removeSource(FIRE_SOURCE_ID);
-  }
-  
-  console.log('[Fire] Removed fire visualization layers');
-};
+    
+    console.log('[Fire] Removed fire visualization layers');
+  };
 
 
   // ============================================================================
-  // 🎯 MAIN QUERY HANDLER - v5.2 WITH FLOOD FOLLOW-UP SUPPORT
+  // 🎯 MAIN QUERY HANDLER - WITH FLOOD, FIRE, FOREST, MPC SUPPORT
   // ============================================================================
   const handleSendQuery = async () => {
     if (!chatInput.trim() || isLoadingQuery) return;
@@ -616,7 +629,6 @@ const removeFireMarkers = () => {
     
     const detectedCountry = detectCountryFromQuery(userMessage);
     
-    // If query asks about drivers/causes but doesn't mention country, add current country
     let queryToSend = userMessage;
     const driverKeywords = ['driver', 'cause', 'why', 'reason', 'show me drivers', 'what are the'];
     const hasDriverIntent = driverKeywords.some(kw => userMessage.toLowerCase().includes(kw));
@@ -648,20 +660,16 @@ const removeFireMarkers = () => {
       console.log('[Query] Intent:', apiResponse.intent);
 
       // ========================================================================
-      // 🌊 v5.2: HANDLE FLOOD FOLLOW-UP INTENTS FIRST (BEFORE ANYTHING ELSE)
+      // 🌊 HANDLE FLOOD FOLLOW-UP INTENTS FIRST
       // ========================================================================
       
       const isFloodStatistics = apiResponse.intent === 'flood_statistics';
       const isFloodOptical = apiResponse.intent === 'flood_optical';
       
-      // ─────────────────────────────────────────────────────────────────────
-      // FLOOD STATISTICS FOLLOW-UP (on-demand population/cropland)
-      // ─────────────────────────────────────────────────────────────────────
       if (isFloodStatistics) {
         console.log('[Dashboard] 📊 Flood statistics follow-up received');
         
         if (apiResponse.data && floodData) {
-          // Update flood data with new statistics
           setFloodData(prev => prev ? {
             ...prev,
             statistics: {
@@ -675,24 +683,19 @@ const removeFireMarkers = () => {
           console.log('[Dashboard] ✅ Flood statistics updated:', apiResponse.data);
         }
         
-        // Add AI response to chat
         const aiResponse = apiResponse.report || apiResponse.answer || 'Statistics loaded successfully';
         setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
         
         setIsLoadingQuery(false);
-        return; // EXIT EARLY - Don't process other intents
+        return;
       }
       
-      // ─────────────────────────────────────────────────────────────────────
-      // FLOOD OPTICAL FOLLOW-UP (on-demand Sentinel-2 imagery) - v5.2 FIXED
-      // ─────────────────────────────────────────────────────────────────────
       if (isFloodOptical) {
         console.log('[Dashboard] 🛰️ Flood optical follow-up received');
         
         if (apiResponse.data?.tiles && floodData) {
           const opticalTiles = apiResponse.data.tiles;
           
-          // Merge optical tiles with existing flood tiles
           const updatedTiles: FloodTiles = {
             ...floodData.tiles,
             optical_before: opticalTiles.optical_before,
@@ -701,18 +704,15 @@ const removeFireMarkers = () => {
             ndwi_after: opticalTiles.ndwi_after
           };
           
-          // Update flood data with new tiles
           setFloodData(prev => prev ? {
             ...prev,
             tiles: updatedTiles
           } : null);
           
-          // Add optical layers to map
           if (map.current) {
             addOpticalLayers(map.current, opticalTiles, floodLayers, floodOpacity);
           }
           
-          // Enable optical after layer by default (show it on the map)
           setFloodLayers(prev => ({
             ...prev,
             opticalAfter: true,
@@ -724,21 +724,19 @@ const removeFireMarkers = () => {
           console.log('[Dashboard] ✅ Optical tiles added:', Object.keys(opticalTiles).filter(k => opticalTiles[k as keyof typeof opticalTiles]));
         }
         
-        // Add AI response to chat
         const aiResponse = apiResponse.report || apiResponse.answer || 'Optical imagery loaded successfully';
         setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
         
         setIsLoadingQuery(false);
-        return; // EXIT EARLY - Don't process other intents
+        return;
       }
 
       // ========================================================================
-      // STANDARD INTENT HANDLING (Non-follow-up queries)
+      // STANDARD INTENT HANDLING
       // ========================================================================
 
       const responseCountry = apiResponse.data?.country || detectedCountry || currentCountry;
       
-      // Check if country changed
       const countryChanged = responseCountry !== currentCountry;
       console.log('[Query] Current country:', currentCountry, '| Response country:', responseCountry, '| Changed:', countryChanged);
       
@@ -755,29 +753,26 @@ const removeFireMarkers = () => {
       if (isFloodQuery && apiResponse.data?.show_flood) {
         console.log('[Dashboard] 🌊 Flood query detected, processing flood data...');
         
-        // CLEAR ALL OTHER LAYERS FIRST
         if (map.current) {
           removeHansenLayers(map.current);
           if (hasDriverLayer(map.current)) {
             removeDriverLayer(map.current);
           }
           removeFireMarkers();
+          removeMPCLayers(map.current);
         }
         
-        // CLEAR OTHER STATS
         setFireStats(null);
         setForestStats(null);
         setDriverBreakdown(null);
         setDriverLayerData(null);
+        setMpcData(null);
         
-        // SET FLOOD DATA
         setFloodData(apiResponse.data);
         
-        // RESET FLOOD LAYERS TO DEFAULTS (ensures clean state)
         setFloodLayers(DEFAULT_FLOOD_LAYERS);
         setFloodOpacity(DEFAULT_FLOOD_OPACITY);
         
-        // ADD FLOOD LAYERS TO MAP
         if (map.current && apiResponse.data.tiles) {
           addFloodLayers(
             map.current,
@@ -787,7 +782,6 @@ const removeFireMarkers = () => {
           );
         }
         
-        // FLY TO FLOOD LOCATION
         if (map.current && apiResponse.data.center) {
           flyToFloodLocation(
             map.current,
@@ -796,10 +790,8 @@ const removeFireMarkers = () => {
           );
         }
         
-        // UPDATE AVAILABLE LAYERS
         setAvailableLayers(['flood']);
         
-        // UPDATE VISIBILITY STATE
         setVisibleLayers({
           baseline: false,
           loss: false,
@@ -809,7 +801,6 @@ const removeFireMarkers = () => {
         
         console.log('[Dashboard] ✅ Flood data loaded successfully');
         
-        // ADD AI RESPONSE TO CHAT
         const aiResponse = apiResponse.report || apiResponse.answer || 'Flood data loaded successfully';
         setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
         
@@ -817,8 +808,63 @@ const removeFireMarkers = () => {
         return;
       }
 
+      // ========================================================================
+      // 🛰️ MPC SATELLITE IMAGERY QUERY
+      // ========================================================================
+      const isMPCQuery = apiResponse.intent === 'query_mpc_images';
+
+      if (isMPCQuery && apiResponse.data?.show_mpc) {
+        console.log('[Dashboard] 🛰️ MPC query detected, processing satellite imagery...');
+        
+        if (map.current) {
+          removeHansenLayers(map.current);
+          if (hasDriverLayer(map.current)) {
+            removeDriverLayer(map.current);
+          }
+          removeFireMarkers();
+          removeFloodLayers(map.current);
+        }
+        
+        setFireStats(null);
+        setForestStats(null);
+        setDriverBreakdown(null);
+        setDriverLayerData(null);
+        setFloodData(null);
+        
+        setMpcData(apiResponse.data);
+        
+        if (map.current && apiResponse.data) {
+          addMPCLayers(map.current, apiResponse.data);
+        }
+        
+        if (map.current && apiResponse.data.center) {
+          flyToMPCLocation(
+            map.current,
+            apiResponse.data.center,
+            apiResponse.data.zoom || 10
+          );
+        }
+        
+        setAvailableLayers(['mpc']);
+        
+        setVisibleLayers({
+          baseline: false,
+          loss: false,
+          gain: false,
+          drivers: false
+        });
+        
+        console.log('[Dashboard] ✅ MPC data loaded successfully');
+        
+        const aiResponse = apiResponse.report || apiResponse.answer || 'Satellite imagery search completed';
+        setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
+        
+        setIsLoadingQuery(false);
+        return;
+      }
+
       // ========================================
-      // 🔥 FIRE DETECTION (Clear flood data first)
+      // 🔥 FIRE DETECTION
       // ========================================
       const isFireQuery = apiResponse.intent === 'query_fires_realtime' || 
                           /\b(fire|fires|burning|wildfire|blaze)\b/i.test(userMessage);
@@ -826,11 +872,10 @@ const removeFireMarkers = () => {
       if (isFireQuery && responseCountry) {
         console.log('[Dashboard] 🔥 Fire query detected, fetching live fire data...');
         
-        // CLEAR FLOOD DATA
         clearFloodData();
+        clearMPCData();
         
         try {
-          // REMOVE ALL FOREST LAYERS FIRST
           if (map.current) {
             removeHansenLayers(map.current);
             if (hasDriverLayer(map.current)) {
@@ -843,23 +888,18 @@ const removeFireMarkers = () => {
           console.log('[Dashboard] Fire data received:', fireData);
           
           if (fireData.success) {
-            // Set fire statistics
             setFireStats(fireData.statistics);
             
-            // Add fire markers to map
             if (fireData.fires.length > 0) {
               addFireMarkers(fireData.fires);
             }
             
-            // SET ONLY FIRES LAYER
             setAvailableLayers(['fires']);
             
-            // CLEAR FOREST STATS AND DRIVER DATA
             setForestStats(null);
             setDriverBreakdown(null);
             setDriverLayerData(null);
             
-            // UPDATE VISIBILITY STATE
             setVisibleLayers({
               baseline: false,
               loss: false,
@@ -867,12 +907,10 @@ const removeFireMarkers = () => {
               drivers: false
             });
             
-            // Add country boundary
             await addCountryBoundary(responseCountry);
             
             console.log('[Dashboard] ✅ Fire data loaded successfully');
             
-            // ADD AI RESPONSE TO CHAT
             const aiResponse = apiResponse.report || apiResponse.answer || 'Fire data loaded successfully';
             setChatMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
             
@@ -888,9 +926,9 @@ const removeFireMarkers = () => {
       // FOREST/DRIVER LAYER LOADING
       // ========================================
 
-      // CLEAR FLOOD DATA for non-flood queries
-      if (!isFloodQuery) {
+      if (!isFloodQuery && !isMPCQuery) {
         clearFloodData();
+        clearMPCData();
       }
 
       try {
@@ -905,7 +943,6 @@ const removeFireMarkers = () => {
           console.log('[Dashboard] Is forest query:', isForestQuery);
           console.log('[Dashboard] Country changed:', countryChanged);
           
-          // CLEAR FIRE DATA when switching to forest/driver queries
           if (isForestQuery || isDriverQuery) {
             console.log('[Dashboard] Clearing fire data for forest/driver query');
             setFireStats(null);
@@ -924,7 +961,6 @@ const removeFireMarkers = () => {
             setDriverLayerData(null);
           }
           
-          // LOAD HANSEN LAYERS (for forest queries)
           if (isForestQuery && (countryChanged || availableLayers.length === 0)) {
             console.log('[Dashboard] Loading Hansen tiles (baseline/loss/gain)...');
             
@@ -958,7 +994,6 @@ const removeFireMarkers = () => {
             }
           }
           
-          // LOAD DRIVER LAYER (for driver queries ONLY)
           if (isDriverQuery) {
             console.log('[Dashboard] 🎯 Driver query detected, loading driver layer...');
             
@@ -1000,7 +1035,6 @@ const removeFireMarkers = () => {
         console.error('[Dashboard] GEE tile error:', geeError);
       }
 
-      // Only update stats on forest queries, NOT on driver queries
       if (apiResponse.data && apiResponse.intent !== 'query_drivers') {
         const data = apiResponse.data;
         
@@ -1062,7 +1096,7 @@ const removeFireMarkers = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          {hasQueried && (forestStats || fireStats || floodData) && (
+          {hasQueried && (forestStats || fireStats || floodData || mpcData) && (
             <button
               onClick={() => setShowStatsPanel(!showStatsPanel)}
               className="h-8 px-3 rounded-lg bg-slate-800 border border-slate-700 flex items-center gap-2 text-gray-300 font-medium text-xs cursor-pointer hover:bg-slate-700 transition-colors"
@@ -1197,6 +1231,22 @@ const removeFireMarkers = () => {
                     </label>
                   )}
 
+                  {/* MPC LAYER CONTROL */}
+                  {availableLayers.includes('mpc') && (
+                    <label className={`flex items-center gap-2.5 p-2.5 rounded-md cursor-pointer transition-all border bg-slate-800 border-slate-700`}>
+                      <input 
+                        type="checkbox" 
+                        defaultChecked={true}
+                        className="h-3.5 w-3.5 rounded accent-blue-600 bg-slate-800 border-slate-700"
+                      />
+                      <div className="w-3.5 h-3.5 rounded-sm bg-gradient-to-br from-blue-500 to-cyan-600"></div>
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-gray-200">Satellite Imagery</div>
+                        <div className="text-[10px] text-gray-500">Search Results</div>
+                      </div>
+                    </label>
+                  )}
+
                   {/* FLOOD LAYER CONTROLS */}
                   {availableLayers.includes('flood') && floodData?.tiles && (
                     <div className="mt-4 pt-4 border-t border-slate-700">
@@ -1313,6 +1363,27 @@ const removeFireMarkers = () => {
                   </div>
                 )}
 
+                {/* MPC LEGEND */}
+                {availableLayers.includes('mpc') && mpcData && (
+                  <div className="space-y-1.5 pt-2 border-t border-slate-700">
+                    <div className="text-[10px] font-semibold text-gray-400 uppercase">Satellite Imagery</div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-2.5 rounded-sm border-2 border-dashed" style={{
+                        borderColor: getCollectionColor(mpcData.collection)
+                      }}></div>
+                      <span className="text-[10px] font-medium text-gray-300">Search Area</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full flex items-center justify-center text-white text-[8px] font-bold" style={{
+                        backgroundColor: getCollectionColor(mpcData.collection)
+                      }}>
+                        {mpcData.images_found || 0}
+                      </div>
+                      <span className="text-[10px] font-medium text-gray-300">Available Images</span>
+                    </div>
+                  </div>
+                )}
+
                 {availableLayers.includes('flood') && (
                   <div className="space-y-1.5 pt-2 border-t border-slate-700">
                     <div className="text-[10px] font-semibold text-gray-400 uppercase">Flood Detection</div>
@@ -1350,7 +1421,12 @@ const removeFireMarkers = () => {
         {/* Right sidebar - Stats */}
         {hasQueried && showStatsPanel && (
           <>
-            {floodData ? (
+            {mpcData ? (
+              <MPCStatsPanel 
+                data={mpcData}
+                loading={isLoadingQuery}
+              />
+            ) : floodData ? (
               <FloodStatsPanel 
                 data={floodData} 
                 locationName={floodData.location_name || 'Unknown Location'}
@@ -1364,6 +1440,8 @@ const removeFireMarkers = () => {
             ) : (
               forestStats && (
                 <aside className="w-[360px] bg-slate-900/95 backdrop-blur-sm border-l border-slate-800 overflow-y-auto">
+                  {/* ... EXISTING FOREST STATS PANEL CODE ... */}
+                  {/* (Keep all your existing forest stats panel JSX exactly as is) */}
                   <div className="p-4 space-y-3.5">
                     
                     <div className="pb-2.5 border-b border-slate-800">
@@ -1647,7 +1725,7 @@ const removeFireMarkers = () => {
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleSendQuery()}
                 onFocus={() => setIsChatExpanded(true)}
-                placeholder="Ask about deforestation, fires, floods, or drivers..." 
+                placeholder="Ask about deforestation, fires, floods, satellite imagery..." 
                 className="flex-1 h-10 px-3.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-gray-200 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all"
                 disabled={isLoadingQuery}
               />
