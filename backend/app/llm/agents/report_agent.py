@@ -71,6 +71,9 @@ class ReportAgent:
         
         if intent == "query_surface_water":
             return self._generate_surface_water_report(analysis_result)
+        
+        if intent == "query_air_quality":
+            return self._generate_air_quality_report(analysis_result)
         #  Handle MPC queries
         if intent == "query_mpc_images":
             return self._generate_mpc_report(analysis_result)
@@ -749,4 +752,126 @@ Toggle these layers to explore:
 *Analysis generated from {end_year - start_year + 1} years of satellite observations.*
 """
         
+        return report
+
+    def _generate_air_quality_report(self, result: Dict[str, Any]) -> str:
+        """Generate report for air quality analysis."""
+        
+        data = result.get("data", {})
+        
+        # Handle comparison reports
+        if data.get("is_comparison"):
+            comp = data.get("comparison", {})
+            location_name = data.get("location_name", "Unknown")
+            
+            trend_icon = "📈" if comp.get("trend") == "increased" else "📉"
+            change_color = "🔴" if comp.get("trend") == "increased" else "🟢"
+            
+            return f"""## 💨 Air Quality Comparison: {location_name}
+
+### Overview
+
+Comparing **{comp.get('pollutant_name')}** levels in **{location_name}** between **{comp.get('year1')}** and **{comp.get('year2')}**.
+
+### Key Findings
+
+| Metric | Value |
+|--------|-------|
+| **{comp.get('year1')} Average** | {comp.get('mean_year1')} {comp.get('unit')} |
+| **{comp.get('year2')} Average** | {comp.get('mean_year2')} {comp.get('unit')} |
+| **Absolute Change** | {comp.get('absolute_change'):+g} {comp.get('unit')} |
+| **Percent Change** | {trend_icon} **{comp.get('percent_change'):+.1f}%** |
+
+### Assessment
+
+The average {comp.get('pollutant_name')} concentration has **{comp.get('trend')}** by **{abs(comp.get('percent_change', 0)):.1f}%**.
+
+{change_color} **Impact**: {'Air quality has worsened.' if comp.get('trend') == 'increased' else 'Air quality has improved.'}
+
+### Map Visualization
+
+- **Blue areas**: Decrease in pollution (Improved)
+- **Red areas**: Increase in pollution (Worsened)
+- **White areas**: No significant change
+
+"""
+
+        # Handle standard analysis reports
+        location = data.get("location", {})
+        stats = data.get("statistics", {})
+        aq_level = data.get("air_quality_level", {})
+        period = data.get("analysis_period", {})
+        
+        location_name = location.get("name", "Unknown")
+        year = period.get("year", 2023)
+        country = location.get("country", "")
+        
+        # Determine overall status
+        status_emoji = aq_level.get("emoji", "⚪") if aq_level else "⚪"
+        status_text = aq_level.get("level", "Unknown") if aq_level else "Unknown"
+        health_advice = aq_level.get("health_advice", "") if aq_level else ""
+        
+        report = f"""## 💨 Air Quality Analysis: {location_name}
+
+### Overview
+
+Annual air quality analysis for **{location_name}** ({country}) in **{year}**.
+
+**Overall Status (NO₂):** {status_emoji} **{status_text}**
+*{health_advice}*
+
+### Pollutant Statistics ({year})
+
+| Pollutant | Mean | Max | Unit | Sources |
+|-----------|------|-----|------|---------|
+"""
+        
+        # Add rows for each pollutant
+        for key, val in stats.items():
+            if "error" not in val:
+                report += f"| **{val['name']}** ({key}) | {val['mean']} | {val['max']} | {val['unit']} | {val['sources']} |\n"
+        
+        # Monthly Trend
+        monthly = data.get("monthly_trend")
+        if monthly:
+            report += f"""
+### 📅 Monthly Trend (NO₂)
+
+Seasonal variation in Nitrogen Dioxide levels throughout {year}:
+
+| Month | Level ({monthly['unit']}) | Trend |
+|-------|--------------------------|-------|
+"""
+            max_val = max([d['value'] or 0 for d in monthly['data']])
+            for m in monthly['data']:
+                val = m['value']
+                if val is not None:
+                    # Simple bar chart
+                    bar_len = int((val / max_val) * 10) if max_val > 0 else 0
+                    bar = "█" * bar_len
+                    report += f"| {m['month_name']} | {val} | {bar} |\n"
+        
+        # Yearly Trend
+        yearly = data.get("yearly_trend")
+        if yearly:
+            change_icon = "📈" if yearly.get("change_percent", 0) > 0 else "📉"
+            report += f"""
+### 📈 Long-term Trend ({yearly.get('start_year')} - {yearly.get('end_year')})
+
+Change in NO₂ levels over recent years:
+
+- **Total Change**: {yearly.get('total_change'):+g} {yearly.get('unit')}
+- **Percent Change**: {change_icon} {yearly.get('change_percent'):+.1f}%
+
+"""
+            
+        report += f"""### Methodology
+
+- **Data Source**: Sentinel-5P TROPOMI
+- **Resolution**: ~1km (resampled)
+- **Metric**: Annual/Monthly Mean Concentrations
+
+*Note: Satellite measurements represent the total column density or tropospheric column, which correlates with but is distinct from ground-level station measurements.*
+"""
+
         return report

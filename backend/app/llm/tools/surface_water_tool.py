@@ -628,37 +628,64 @@ def analyze_surface_water(
             loss_percent = 0
             current_percent = 0
         
-        logger.info(f"  📊 Max: {max_extent_km2:.0f} km², Current: {permanent_km2 + seasonal_km2:.0f} km²")
-        logger.info(f"  📊 Lost: {lost_km2:.0f} km² ({loss_percent:.1f}%)")
-        
         # ═══════════════════════════════════════════════════════════════════
         # STEP 5: CALCULATE TIME SERIES
         # ═══════════════════════════════════════════════════════════════════
-        
+
         logger.info("  📈 Calculating time series...")
-        
-        time_series = []
-        
+
+        time_series_raw = []
+
         for year in range(valid_start, valid_end + 1, 2):
             try:
                 year_img = gsw_yearly.filter(ee.Filter.eq('year', year)).first()
                 water = year_img.select('waterClass').gte(2)
-                
+
                 water_pixels = water.reduceRegion(
                     reducer=ee.Reducer.sum(),
                     geometry=aoi,
                     scale=30,
                     maxPixels=1e13
                 ).get('waterClass')
-                
+
                 water_km2 = ee.Number(water_pixels).multiply(pixel_area_km2).getInfo() or 0
-                
-                time_series.append({
+
+                time_series_raw.append({
                     "year": year,
                     "water_area_km2": round(water_km2, 2)
                 })
             except:
                 continue
+
+        # Filter out zero/invalid values (zeros indicate missing data, not dry lakes)
+        time_series = [point for point in time_series_raw if point['water_area_km2'] > 0]
+
+        # Check if we have enough valid data points
+        if len(time_series) < 2:
+            return {
+                "success": False,
+                "error": "Insufficient valid data points for analysis",
+                "details": f"Only {len(time_series)} valid data points found (need at least 2)",
+                "data_gaps": len(time_series_raw) - len(time_series)
+            }
+
+        # Calculate additional statistics from valid data
+        first_valid = time_series[0]
+        last_valid = time_series[-1]
+
+        area_start = first_valid['water_area_km2']
+        area_end = last_valid['water_area_km2']
+        absolute_change = area_end - area_start
+        year_span = last_valid['year'] - first_valid['year']
+
+        # Calculate percentages and rates
+        change_percent = (absolute_change / area_start * 100) if area_start > 0 else 0
+        annual_change_rate = (absolute_change / year_span) if year_span > 0 else 0
+
+        logger.info(f"  📊 Max: {max_extent_km2:.0f} km², Current: {permanent_km2 + seasonal_km2:.0f} km²")
+        logger.info(f"  📊 Lost: {lost_km2:.0f} km² ({loss_percent:.1f}%)")
+        logger.info(f"  📊 Valid data: {len(time_series)}/{len(time_series_raw)} points ({first_valid['year']}-{last_valid['year']})")
+        logger.info(f"  📊 Change: {absolute_change:+.1f} km² ({change_percent:+.1f}%) | {annual_change_rate:+.1f} km²/year")
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 6: CREATE BASEMAP
@@ -756,9 +783,9 @@ def analyze_surface_water(
                 "description": "Was dry, now water"
             }
         }
-        
+
         tiles = {k: v for k, v in tiles.items() if v is not None}
-        
+
         # ═══════════════════════════════════════════════════════════════════
         # STEP 8: GENERATE ANIMATION
         # ═══════════════════════════════════════════════════════════════════
@@ -874,7 +901,15 @@ def analyze_surface_water(
                 "new_water_km2": round(new_km2, 2),
                 "net_change_km2": round(net_change_km2, 2),
                 "loss_percent": round(loss_percent, 1),
-                "current_vs_max_percent": round(current_percent, 1)
+                "current_vs_max_percent": round(current_percent, 1),
+                # Additional statistics from valid time series data
+                "area_start_km2": round(area_start, 2),
+                "area_end_km2": round(area_end, 2),
+                "absolute_change_km2": round(absolute_change, 2),
+                "change_percent": round(change_percent, 1),
+                "annual_change_rate": round(annual_change_rate, 2),
+                "valid_data_points": len(time_series),
+                "data_gaps": len(time_series_raw) - len(time_series)
             },
             "time_series": time_series,
             "tiles": tiles,

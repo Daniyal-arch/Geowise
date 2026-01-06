@@ -19,6 +19,7 @@ from app.utils.logger import get_logger
 from sqlalchemy import text
 from app.llm.tools.mpc_search_tool import search_mpc_images
 from app.llm.tools.surface_water_tool import analyze_surface_water
+from app.llm.tools.air_quality_tool import analyze_air_quality, compare_air_quality_years
 
 logger = get_logger(__name__)
 
@@ -153,6 +154,9 @@ class LLMOrchestrator:
 
         elif intent == "query_surface_water":
             result = await self._query_surface_water(parameters)
+
+        elif intent == "query_air_quality":
+            result = await self._query_air_quality(parameters)
 
                 
         elif intent == "generate_report":
@@ -978,7 +982,7 @@ class LLMOrchestrator:
         
         try:
             # Call the tool
-            result = analyze_urban_expansion.invoke({
+            result = await analyze_urban_expansion.ainvoke({
                 "location_name": location_name,
                 "start_year": start_year,
                 "end_year": end_year,
@@ -988,7 +992,10 @@ class LLMOrchestrator:
                 "include_population": True
             })
             
-            if not result.get("success"):
+            # ══════════════════════════════════════════════════════════════════
+            # FIX: Check for "status" not "success"
+            # ══════════════════════════════════════════════════════════════════
+            if result.get("status") != "success":
                 return {
                     "status": "error",
                     "message": result.get("error", "Urban expansion analysis failed"),
@@ -998,10 +1005,11 @@ class LLMOrchestrator:
             # Build response
             location = result.get("location", {})
             stats = result.get("statistics", {})
-            tiles = result.get("tiles", {})
-            animation = result.get("animation", {})
-            population = result.get("population", {})
-            map_config = result.get("map_config", {})
+            tiles = result.get("tile_urls", {})  # FIX: Key is "tile_urls" not "tiles"
+            animation_url = result.get("animation_url")
+            
+            # Calculate center from location
+            center = location.get("center", [0, 0])
             
             return {
                 "status": "success",
@@ -1009,12 +1017,12 @@ class LLMOrchestrator:
                 "data": {
                     # Location
                     "location_name": location.get("name"),
-                    "country": location.get("country"),
+                    "country": location.get("country") if "country" in location else None,
                     "buffer_km": location.get("buffer_km"),
                     
                     # Map
-                    "center": map_config.get("center"),
-                    "zoom": map_config.get("zoom"),
+                    "center": center,
+                    "zoom": 10,
                     
                     # Analysis period
                     "start_year": result.get("analysis_period", {}).get("start_year"),
@@ -1023,20 +1031,28 @@ class LLMOrchestrator:
                     # Statistics
                     "statistics": stats,
                     
+                    # Epochs
+                    "epochs": result.get("epochs", {}),
+                    
+                    # Growth rates
+                    "growth_rates": result.get("growth_rates", {}),
+                    
+                    # UN SDG
+                    "un_sdg_11_3_1": result.get("un_sdg_11_3_1", {}),
+                    
+                    # Distance rings
+                    "distance_rings": result.get("distance_rings", {}),
+                    
                     # Tiles
                     "tiles": tiles,
                     
                     # Animation
-                    "animation": animation,
-                    
-                    # Population
-                    "population": population,
+                    "animation_url": animation_url,
                     
                     # Flags
                     "show_urban": True,
                     
-                    # Methodology
-                    "methodology": result.get("methodology"),
+                    # Generated
                     "generated_at": result.get("generated_at")
                 }
             }
@@ -2037,6 +2053,96 @@ class LLMOrchestrator:
             return {
                 "status": "error",
                 "message": f"Surface water analysis failed: {str(e)}"
+            }
+
+
+    async def _query_air_quality(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Query air quality analysis using Sentinel-5P.
+        """
+        
+        location_name = parameters.get("location_name")
+        year = parameters.get("year", 2023)
+        pollutants = parameters.get("pollutants")
+        compare_years = parameters.get("compare_years", [])
+        
+        logger.info(f"💨 Air quality query: {location_name} ({year}, compare={compare_years})")
+        
+        if not location_name:
+            return {
+                "status": "error",
+                "message": "Please specify a location for air quality analysis.",
+                "suggestion": "Try: 'Show air pollution in Lahore' or 'Check NO2 levels in London'"
+            }
+        
+        try:
+            # Handle comparison request if 2 years are present
+            if compare_years and len(compare_years) >= 2:
+                result = compare_air_quality_years.invoke({
+                    "location_name": location_name,
+                    "year1": compare_years[0],
+                    "year2": compare_years[1],
+                    "pollutant": "NO2"  # Default to NO2 for comparison unless specified
+                })
+                
+                if not result.get("success"):
+                    return {
+                        "status": "error",
+                        "message": result.get("error", "Comparison failed")
+                    }
+                
+                return {
+                    "status": "success",
+                    "intent": "query_air_quality",
+                    "data": {
+                        "is_comparison": True,
+                        "location_name": result.get("location", {}).get("name"),
+                        "comparison": result.get("comparison", {}),
+                        "tiles": result.get("tiles", {}),
+                        "map_config": result.get("map_config", {})
+                    }
+                }
+            
+            # Standard single-year analysis
+            result = analyze_air_quality.invoke({
+                "location_name": location_name,
+                "year": year,
+                "pollutants": pollutants
+            })
+            
+            if not result.get("success"):
+                return {
+                    "status": "error",
+                    "message": result.get("error", "Air quality analysis failed"),
+                    "suggestion": result.get("suggestion", "Try a different city name"),
+                    "available_cities": result.get("available_cities", [])
+                }
+                
+            return {
+                "status": "success",
+                "intent": "query_air_quality",
+                "data": {
+                    "success": True,
+                    "location": result.get("location"),
+                    "analysis_period": result.get("analysis_period"),
+                    "air_quality_level": result.get("air_quality_level"),
+                    "pollutant_statistics": result.get("pollutant_statistics"),
+                    "monthly_trend": result.get("monthly_trend"),
+                    "yearly_trend": result.get("yearly_trend"),
+                    "tiles": result.get("tiles"),
+                    "map_config": result.get("map_config"),
+                    "methodology": result.get("methodology"),
+                    "generated_at": result.get("generated_at")
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"💨 Air quality query failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": f"Air quality analysis failed: {str(e)}"
             }
 
 

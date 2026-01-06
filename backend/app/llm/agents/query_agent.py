@@ -290,6 +290,43 @@ class QueryAgent:
             water_params = self._extract_water_parameters(user_query)
             parsed["parameters"].update(water_params)
             return parsed
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # Pattern 4.4: AIR QUALITY QUERIES 💨
+        # ═══════════════════════════════════════════════════════════════════════
+
+        air_quality_keywords = [
+            # Direct terms
+            "air quality", "air pollution", "pollution level", "smog",
+            "pollutant", "pollutants", "emissions",
+            # Specific pollutants
+            "no2", "nitrogen dioxide", "so2", "sulfur dioxide", "sulphur",
+            "co ", "carbon monoxide", "ozone", "o3", "methane", "ch4",
+            "aerosol", "particulate", "pm2.5", "pm10", "dust",
+            "formaldehyde", "hcho",
+            # Health related
+            "breathable", "air index", "aqi"
+        ]
+
+        polluted_cities = [
+            "lahore", "delhi", "beijing", "mumbai", "dhaka", "karachi",
+            "cairo", "los angeles", "mexico city", "shanghai", "tehran"
+        ]
+
+        has_air_keyword = any(keyword in query_lower for keyword in air_quality_keywords)
+        has_polluted_city = any(city in query_lower for city in polluted_cities)
+
+        # Check for air quality context with city name
+        air_context_words = ["pollution", "air", "smog", "quality", "emissions"]
+        has_air_context = any(word in query_lower for word in air_context_words)
+
+        if has_air_keyword or (has_polluted_city and has_air_context):
+            logger.info("Rule-based detection: Air quality query 💨")
+            parsed["intent"] = "query_air_quality"
+            parsed["parameters"] = parsed.get("parameters", {})
+            air_params = self._extract_air_quality_parameters(user_query)
+            parsed["parameters"].update(air_params)
+            return parsed
         # ═══════════════════════════════════════════════════════════════════════
         # Pattern 5: Real-time fire queries
         realtime_keywords = ["real-time", "realtime", "live", "current", "today", "now", "active"]
@@ -559,29 +596,88 @@ class QueryAgent:
         
         return params
     def _extract_urban_parameters(self, user_query: str) -> Dict[str, Any]:
-        """Extract urban expansion parameters from query."""
+        """Extract urban expansion parameters from query - works for ANY city worldwide."""
         
         query_lower = user_query.lower()
         params = {}
         
-        # Extract city name
-        known_cities = {
-            "dubai": "Dubai", "lahore": "Lahore", "karachi": "Karachi",
-            "islamabad": "Islamabad", "mumbai": "Mumbai", "delhi": "Delhi",
-            "beijing": "Beijing", "shanghai": "Shanghai", "tokyo": "Tokyo",
-            "singapore": "Singapore", "riyadh": "Riyadh", "london": "London",
-            "paris": "Paris", "new york": "New York", "los angeles": "Los Angeles",
-            "cairo": "Cairo", "lagos": "Lagos", "nairobi": "Nairobi",
-            "johannesburg": "Johannesburg", "sao paulo": "São Paulo"
-        }
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 1: Remove noise words to isolate location
+        # ─────────────────────────────────────────────────────────────────────
         
-        for city_key, city_name in known_cities.items():
-            if city_key in query_lower:
-                params["location_name"] = city_name
-                break
+        # Words that are NEVER part of a city name
+        noise_words = [
+            "show", "display", "analyze", "get", "find", "what", "how", "has",
+            "urban", "growth", "expansion", "sprawl", "development", "urbanization",
+            "urbanisation", "city", "the", "me", "please", "can", "you",
+            "built-up", "built", "up", "area", "change", "changes", "over", "time"
+        ]
         
-        # Extract years
-        years = re.findall(r'\b(19[789]\d|20[012]\d)\b', user_query)
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 2: Extract location using multiple strategies
+        # ─────────────────────────────────────────────────────────────────────
+        
+        location = None
+        
+        # Strategy A: Look for "in/of/for <location>" pattern (most reliable)
+        location_match = re.search(
+            r'\b(?:in|of|for|at)\s+([A-Za-z][A-Za-z\s\-\'\.]+?)(?:\s+(?:since|from|between|over|during|\d{4})|[,\.\?]|$)',
+            user_query,
+            re.IGNORECASE
+        )
+        
+        if location_match:
+            location = location_match.group(1).strip()
+            # Remove trailing noise
+            for word in ["since", "from", "between", "over", "during"]:
+                if location.lower().endswith(word):
+                    location = location[:-len(word)].strip()
+        
+        # Strategy B: Look for "how has <location> grown" pattern
+        if not location:
+            match = re.search(
+                r'how\s+has\s+([A-Za-z][A-Za-z\s\-\'\.]+?)\s+(?:grown|expanded|developed|changed)',
+                user_query,
+                re.IGNORECASE
+            )
+            if match:
+                location = match.group(1).strip()
+        
+        # Strategy C: Look for "<location> urban growth" pattern
+        if not location:
+            match = re.search(
+                r'^([A-Za-z][A-Za-z\s\-\'\.]+?)\s+(?:urban|city|growth|expansion)',
+                user_query,
+                re.IGNORECASE
+            )
+            if match:
+                location = match.group(1).strip()
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 3: Clean up extracted location
+        # ─────────────────────────────────────────────────────────────────────
+        
+        if location:
+            # Remove noise words from start/end
+            words = location.split()
+            cleaned_words = []
+            
+            for word in words:
+                if word.lower() not in noise_words:
+                    cleaned_words.append(word)
+            
+            location = " ".join(cleaned_words).strip()
+            
+            # Title case
+            if location and len(location) >= 2:
+                params["location_name"] = location.title()
+                logger.info(f"Extracted location: '{location}'")
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 4: Extract years
+        # ─────────────────────────────────────────────────────────────────────
+        
+        years = re.findall(r'\b(19[6-9]\d|20[0-2]\d)\b', user_query)
         
         if len(years) >= 2:
             params["start_year"] = int(min(years))
@@ -595,76 +691,20 @@ class QueryAgent:
                 params["start_year"] = 1975
                 params["end_year"] = year
         else:
+            # Default
             params["start_year"] = 1975
             params["end_year"] = 2020
         
-        # Check for animation request
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 5: Animation flag
+        # ─────────────────────────────────────────────────────────────────────
+        
         if any(kw in query_lower for kw in ["animation", "animate", "timelapse", "time-lapse", "gif"]):
             params["include_animation"] = True
+        else:
+            params["include_animation"] = True  # Default to true for urban
         
-        return params
-    def _extract_mpc_parameters(self, user_query: str) -> Dict[str, Any]:
-        """
-        Extract MPC search parameters from natural language query.
-        
-        Extracts:
-        - location_name: Place name
-        - start_date, end_date: Date range
-        - collection: Satellite collection
-        """
-        query_lower = user_query.lower()
-        params = {}
-        
-        # Extract dates
-        year_match = re.search(r'\b(20\d{2})\b', user_query)
-        
-        if year_match:
-            year = year_match.group(1)
-            
-            # Month patterns
-            month_patterns = {
-                'january': '01', 'february': '02', 'march': '03', 'april': '04',
-                'may': '05', 'june': '06', 'july': '07', 'august': '08',
-                'september': '09', 'october': '10', 'november': '11', 'december': '12',
-                'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
-                'jun': '06', 'jul': '07', 'aug': '08', 'sep': '09',
-                'oct': '10', 'nov': '11', 'dec': '12'
-            }
-            
-            month = None
-            for month_name, month_num in month_patterns.items():
-                if month_name in query_lower:
-                    month = month_num
-                    break
-            
-            if month:
-                # Specific month
-                params["start_date"] = f"{year}-{month}-01"
-                params["end_date"] = f"{year}-{month}-28"
-            else:
-                # Whole year
-                params["start_date"] = f"{year}-01-01"
-                params["end_date"] = f"{year}-12-31"
-            
-            params["year"] = int(year)
-        
-        # Extract location
-        location_patterns = [
-            r'images?\s+of\s+([a-zA-Z\s]+?)(?:\s+from|\s+in\s+\d{4}|\s*$)',
-            r'imagery\s+for\s+([a-zA-Z\s]+?)(?:\s+from|\s+in\s+\d{4}|\s*$)',
-            r'data\s+(?:of|for)\s+([a-zA-Z\s]+?)(?:\s+from|\s+in\s+\d{4}|\s*$)',
-        ]
-        
-        for pattern in location_patterns:
-            match = re.search(pattern, query_lower)
-            if match:
-                location = match.group(1).strip()
-                # Clean up
-                location = re.sub(r'\b(the|show|find|search|get)\b', '', location).strip()
-                if location and len(location) > 2:
-                    params["location_name"] = location.title()
-                    break
-        
+        logger.info(f"Urban parameters: {params}")
         return params
     def _extract_year(self, user_query: str) -> Optional[int]:
         """
@@ -775,5 +815,71 @@ class QueryAgent:
             params["animation_fps"] = 0.5
         else:
             params["animation_fps"] = 1.0
+        
+        return params
+
+    def _extract_air_quality_parameters(self, user_query: str) -> Dict[str, Any]:
+        """Extract air quality parameters from query."""
+        
+        query_lower = user_query.lower()
+        params = {}
+        
+        # Known cities
+        cities = {
+            "lahore": "Lahore", "karachi": "Karachi", "islamabad": "Islamabad",
+            "delhi": "Delhi", "mumbai": "Mumbai", "bangalore": "Bangalore",
+            "beijing": "Beijing", "shanghai": "Shanghai", "tokyo": "Tokyo",
+            "seoul": "Seoul", "dubai": "Dubai", "riyadh": "Riyadh",
+            "cairo": "Cairo", "tehran": "Tehran", "london": "London",
+            "paris": "Paris", "moscow": "Moscow", "los angeles": "Los Angeles",
+            "new york": "New York", "mexico city": "Mexico City",
+            "sao paulo": "Sao Paulo", "lagos": "Lagos", "dhaka": "Dhaka"
+        }
+        
+        # Find city name
+        for city_key, city_name in cities.items():
+            if city_key in query_lower:
+                params["location_name"] = city_name
+                break
+        
+        # If not found in known list, try to guess or use previous methods (not implemented here but kept for context)
+        # Note: In a real scenario we'd use Named Entity Recognition (NER) or similar.
+        
+        # Extract year
+        years = re.findall(r'\b(201[89]|202[0-4])\b', user_query)
+        
+        if years:
+            params["year"] = int(years[-1])  # Use latest mentioned year
+        else:
+            params["year"] = 2023  # Default to 2023
+        
+        # Extract specific pollutants
+        pollutants = []
+        pollutant_map = {
+            "no2": "NO2", "nitrogen dioxide": "NO2", "nitrogen": "NO2",
+            "so2": "SO2", "sulfur dioxide": "SO2", "sulphur": "SO2",
+            "carbon monoxide": "CO", " co ": "CO",
+            "ozone": "O3", " o3 ": "O3",
+            "methane": "CH4", " ch4 ": "CH4",
+            "aerosol": "AEROSOL", "dust": "AEROSOL", "particulate": "AEROSOL",
+            "formaldehyde": "HCHO", " hcho ": "HCHO"
+        }
+        
+        for keyword, pollutant in pollutant_map.items():
+            if keyword in query_lower and pollutant not in pollutants:
+                pollutants.append(pollutant)
+        
+        if pollutants:
+            params["pollutants"] = pollutants
+        
+        # Check for comparison request
+        if "compar" in query_lower or "vs" in query_lower or "versus" in query_lower:
+            # Try to find two years
+            if len(years) >= 2:
+                params["compare_years"] = [int(years[0]), int(years[1])]
+        
+        # Check for COVID comparison
+        if "covid" in query_lower or "lockdown" in query_lower or "pandemic" in query_lower:
+            params["compare_years"] = [2019, 2020]
         
         return params

@@ -16,6 +16,7 @@ Your job: Parse natural language queries and extract structured parameters.
 3. **Climate (Open-Meteo)**: Historical weather data (1940-present)
 4. **Floods (Sentinel-1 SAR)**: Flood detection via radar change detection 🌊
 5. **Urban Expansion (GHSL)**: City growth analysis (1975-2020) 🏙️
+6. **Air Quality (Sentinel-5P)**: NO2, SO2, CO, Aerosols, etc. (2018-present) 💨
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # AVAILABLE INTENTS
@@ -32,6 +33,7 @@ Your job: Parse natural language queries and extract structured parameters.
 | query_drivers | Deforestation causes | country_iso |
 | query_floods | SAR flood detection | location_name, dates |
 | query_urban_expansion | City growth analysis | location_name |
+| query_air_quality | Air pollution analysis | location_name, year |
 | generate_report | Comprehensive report | country_iso |
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -60,6 +62,12 @@ Urban Expansion Parameters:
 - end_year: Analysis end year (1975-2020)
 - include_animation: true/false for timelapse
 - buffer_km: Radius around city center
+
+Air Quality Parameters:
+- location_name: City name (e.g., "Lahore", "Beijing")
+- year: Analysis year (2018-2024)
+- pollutants: List of pollutants (e.g., ["NO2", "SO2"])
+- compare_years: List of two years for comparison (e.g., [2019, 2020])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXAMPLES - FIRE QUERIES
@@ -301,6 +309,50 @@ Output: {
     "end_year": 2021,
     "include_animation": true,
     "animation_fps": 0.5
+    "animation_fps": 0.5
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 💨 AIR QUALITY QUERY EXAMPLES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+Query: "Show air pollution in Lahore"
+Output: {
+  "intent": "query_air_quality",
+  "parameters": {
+    "location_name": "Lahore",
+    "year": 2023
+  }
+}
+
+Query: "Check NO2 levels in Beijing 2021"
+Output: {
+  "intent": "query_air_quality",
+  "parameters": {
+    "location_name": "Beijing",
+    "year": 2021,
+    "pollutants": ["NO2"]
+  }
+}
+
+Query: "Compare air quality in Delhi 2019 vs 2020"
+Output: {
+  "intent": "query_air_quality",
+  "parameters": {
+    "location_name": "Delhi",
+    "compare_years": [2019, 2020],
+    "pollutants": ["NO2"]
+  }
+}
+
+Query: "Show me smog levels in Los Angeles"
+Output: {
+  "intent": "query_air_quality",
+  "parameters": {
+    "location_name": "Los Angeles",
+    "year": 2023,
+    "pollutants": ["NO2", "AEROSOL", "CO"]
   }
 }
 
@@ -336,9 +388,14 @@ Output: {
       "description": "Fire activity in the region",
       "example_query": "Show fires in India 2023",
       "intent": "query_fires"
+    },
+    {
+      "description": "Air Quality analysis",
+      "example_query": "Show air pollution in Delhi",
+      "intent": "query_air_quality"
     }
   ],
-  "message": "Air quality/pollution data is not currently available. Here are related analyses I can perform:"
+  "message": "I can analyze air quality directly. Try requesting 'Show air pollution in Delhi'."
 }
 
 Query: "What's the weather in Karachi?"
