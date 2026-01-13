@@ -320,7 +320,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 Daniyal Khan - [LinkedIn](https://www.linkedin.com/in/daniyal-khan-7b80b02a6/)
 
-Project Link: [https://github.com/yourusername/geowise](https://github.com/yourusername/geowise)
+Project Link: [https://github.com/Daniyal-arch/geowise](https://github.com/yourusername/geowise)
 
 ---
 
