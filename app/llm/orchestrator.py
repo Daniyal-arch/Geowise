@@ -100,8 +100,18 @@ class LLMOrchestrator:
         elif intent == "generate_report":
             result = await self._generate_report(parameters)
 
+        elif intent == "unknown":
+            # Return helpful suggestions when query is not understood
+            suggestion = parsed.get("suggestion", self._get_capability_suggestions())
+            return {
+                "status": "suggestion",
+                "message": "I couldn't understand your request.",
+                "suggestion": suggestion,
+                "report": suggestion
+            }
+
         else:
-            result = {"status": "error", "message": f"Unknown intent: {intent}"}
+            result = {"status": "error", "message": f"Unknown intent: {intent}", "suggestion": self._get_capability_suggestions()}
         
         # Step 3: Generate natural language report
         if result.get("status") != "error":
@@ -955,6 +965,42 @@ class LLMOrchestrator:
             logger.error(f"Report generation failed: {e}")
             return {"status": "error", "message": str(e)}
     
+    def _get_capability_suggestions(self) -> str:
+        """
+        Return a helpful message describing current capabilities
+        when user query cannot be understood.
+        """
+        return """I couldn't understand your request. Here's what I can help you with:
+
+## Fire Analysis
+- "How many fires in Pakistan in 2020?"
+- "What were the peak fire months in India 2021?"
+- "Show intense fires in Brazil 2020" (high FRP fires)
+- "Recent fires in Indonesia" (last 7 days)
+
+## Fire-Climate Correlation
+- "Analyze fire and temperature correlation in Pakistan 2020"
+- "How do fires correlate with precipitation in Indonesia 2021?"
+
+## Forest Loss & Deforestation
+- "Show deforestation in Brazil"
+- "Forest loss trend in Indonesia"
+- "How much forest was lost in Pakistan?"
+
+## Environmental Reports
+- "Generate environmental report for India"
+- "Compare 2020 and 2021 fires in Brazil"
+
+### Supported Countries
+Pakistan (PAK), India (IND), Brazil (BRA), Indonesia (IDN), Bangladesh (BGD)
+
+### Data Availability
+- **Fire Data**: Historical (2020-2024) + Real-time (last 7 days)
+- **Forest Data**: 2001-2024
+- **Climate Data**: 1940-present
+
+Try rephrasing your question using one of the formats above!"""
+
     async def query_with_rag(self, question: str) -> str:
         """Answer question using RAG"""
         

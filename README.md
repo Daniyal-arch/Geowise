@@ -2,19 +2,61 @@
 
 An intelligent geospatial analysis platform that leverages Large Language Models (LLMs) to analyze satellite imagery and environmental data through natural language prompts.
 
+> **Note:** This project is under active development. Some features are experimental and the platform is not yet production-ready. See [Development Status](#development-status) for details.
+
 ## Overview
 
-GEOWISE combines the power of LLMs with geospatial data APIs to enable environmental analysis, monitoring, and insights through simple text prompts. Users can perform complex satellite imagery analysis, deforestation tracking, flood mapping, urbanization monitoring, and water change detection without writing code.
+GEOWISE combines the power of LLMs with geospatial data APIs to enable environmental analysis, monitoring, and insights through simple text prompts. Users can perform complex satellite imagery analysis, deforestation tracking, fire detection, flood mapping, urbanization monitoring, and climate correlation analysis without writing code.
 
-## Key Features
+## Current Capabilities
 
-- **Natural Language Processing**: Interact with satellite data using simple text prompts
-- **Multi-Source Data Integration**: Integrates NASA FIRMS, Global Forest Watch, Open-Meteo, and World Bank APIs
-- **AI-Powered Analysis**: Uses Groq LLM (Llama 3.3 70B) for intelligent query interpretation and analysis
-- **H3 Spatial Indexing**: Efficient geospatial operations using Uber's H3 hexagonal grid system
-- **Real-time Environmental Monitoring**: Track fires, deforestation, floods, and climate changes
-- **Interactive Web Interface**: Modern Next.js frontend with MapLibre GL for visualization
-- **RESTful API**: FastAPI-powered backend with async support
+### Fire Detection & Analysis
+- **Historical Fire Data (2020-2024)**: Query fire counts, statistics, and locations from NASA FIRMS database
+- **Real-time Fire Detection**: Last 7 days of fire data from NASA FIRMS API
+- **Monthly Breakdown**: Analyze peak fire months and seasonal patterns
+- **High-Intensity Fires**: Find fires by FRP (Fire Radiative Power) threshold
+- **Supported Countries**: Pakistan (PAK), India (IND), Brazil (BRA), Indonesia (IDN), Bangladesh (BGD)
+
+### Fire-Climate Correlation
+- **Statistical Analysis**: Real Pearson correlation coefficients using scipy (not AI approximations)
+- **Temperature Correlation**: Analyze relationship between fires and temperature
+- **Precipitation Correlation**: Analyze relationship between fires and rainfall
+- **P-value Significance**: Statistical significance testing for correlations
+
+### Forest Loss Tracking
+- **Yearly Deforestation Data (2001-2024)**: From Global Forest Watch
+- **Trend Analysis**: Identify increasing/decreasing/stable deforestation trends
+- **Country-level Statistics**: Total forest loss, peak years, recent changes
+
+### Additional Features
+- **Climate Data Integration**: Historical weather data from Open-Meteo (1940-present)
+- **Interactive Map Visualization**: MapLibre GL with multiple data layers
+- **Air Quality Monitoring**: Real-time air quality index data
+- **Flood Risk Visualization**: Flood-affected area mapping
+- **Urban Change Detection**: Track urbanization patterns
+
+## Example Queries
+
+GEOWISE understands natural language queries like:
+
+```
+# Fire Analysis
+"How many fires in Pakistan during 2020?"
+"What were the peak fire months in India 2021?"
+"Show me the most intense fires in Brazil 2020"
+"Recent fires in Indonesia" (last 7 days)
+
+# Climate Correlation
+"Analyze fire and temperature correlation in Pakistan 2020"
+"How do fires correlate with precipitation in Indonesia 2021?"
+
+# Forest Loss
+"Show deforestation in Brazil"
+"Forest loss trend in Indonesia"
+
+# Environmental Reports
+"Generate environmental report for India"
+```
 
 ## Live Demos
 
@@ -49,13 +91,18 @@ Check out these real-world applications:
 - **Charts**: Recharts
 - **Icons**: Lucide React
 
+### Multi-Agent Architecture
+- **Query Agent**: Parses natural language queries into structured parameters with intent detection
+- **Analysis Agent**: Plans the best analysis approach based on query parameters
+- **Report Agent**: Generates human-readable insights with strict anti-hallucination rules
+
 ### Project Structure
 
 ```
 geowise/
 ├── app/                    # Backend application
-│   ├── api/               # API routes and endpoints
-│   ├── core/              # Core business logic
+│   ├── api/v1/            # REST API endpoints
+│   ├── core/              # Spatial & aggregation logic
 │   ├── llm/               # LLM integration layer
 │   │   ├── agents/        # AI agents (query, analysis, report)
 │   │   ├── prompts/       # Prompt templates
@@ -178,28 +225,28 @@ npm run dev
 
 The frontend will be available at `http://localhost:3000`
 
-## Usage
+## API Endpoints
 
-### Example Queries
+### Natural Language Query
+- `POST /api/v1/query/nl` - Submit natural language query (AI-powered)
+- `POST /api/v1/query/rag` - RAG-based question answering
 
-GEOWISE understands natural language queries like:
+### Fire Data
+- `GET /api/v1/fires` - Query fire detections
+- `POST /api/v1/fires/aggregation` - Aggregate fires by H3 cells
 
-- "Show me deforestation in the Amazon rainforest over the last year"
-- "Detect active fires in California from the past week"
-- "Analyze flood risk areas in Pakistan during monsoon season"
-- "Track urban expansion in Dubai from 2020 to 2024"
-- "Monitor water levels in Lake Mead over the past 5 years"
-- "What is the air quality index in New Delhi?"
-- "Compare forest cover loss between Brazil and Indonesia"
+### Forest Data
+- `GET /api/v1/forest/loss/{country}` - Forest loss data
+- `GET /api/v1/forest/stats/{country}` - Forest statistics
+- `GET /api/v1/forest/trend/{country}` - Deforestation trend analysis
 
-### API Endpoints
+### Analysis
+- `POST /api/v1/analysis/correlation` - Spatial correlation analysis
 
-Key API endpoints include:
-
-- `POST /api/v1/query` - Submit natural language query
-- `GET /api/v1/analysis/{id}` - Retrieve analysis results
-- `GET /api/v1/reports/{id}` - Get generated reports
-- `GET /health` - Health check endpoint
+### Other
+- `GET /api/v1/climate/*` - Climate data endpoints
+- `GET /api/v1/tiles/*` - Map tile servers
+- `GET /health` - Health check
 
 See full API documentation at `/docs` after starting the server.
 
@@ -207,18 +254,19 @@ See full API documentation at `/docs` after starting the server.
 
 GEOWISE integrates with multiple authoritative data sources:
 
-- **NASA FIRMS**: Active fire detection from MODIS and VIIRS satellites
-- **Global Forest Watch**: Deforestation and forest change data
-- **Open-Meteo**: Historical and current climate data
-- **World Bank**: Environmental and socioeconomic indicators
-- **Sentinel Hub**: (Coming soon) High-resolution satellite imagery
+| Source | Data Type | Coverage |
+|--------|-----------|----------|
+| NASA FIRMS | Active fire detection (MODIS/VIIRS) | Global, Real-time + Historical |
+| Global Forest Watch | Deforestation & forest change | Global, 2001-2024 |
+| Open-Meteo | Historical weather & climate | Global, 1940-present |
+| World Bank | Environmental & socioeconomic indicators | Global |
 
 ## Technology Highlights
 
 ### H3 Spatial Indexing
 Uses Uber's H3 hexagonal hierarchical spatial index for:
 - Efficient spatial queries
-- Multi-resolution analysis (1km to 25km grids)
+- Multi-resolution analysis (Resolution 5 ~20km for analysis, Resolution 9 ~174m for display)
 - Fast aggregations and visualizations
 
 ### RAG Pipeline
@@ -227,11 +275,62 @@ Implements Retrieval-Augmented Generation for:
 - Domain-specific knowledge integration
 - Improved accuracy in geospatial analysis
 
-### Agent Architecture
-Multi-agent system with specialized roles:
-- **Query Agent**: Interprets user intent and extracts parameters
-- **Analysis Agent**: Processes geospatial data and generates insights
-- **Report Agent**: Creates human-readable summaries and visualizations
+### Anti-Hallucination Measures
+The Report Agent includes strict rules to prevent AI from inventing statistics:
+- Only reports numbers that exist in actual data
+- Forbidden phrases list for unverified claims
+- Required verification before writing any statistic
+- Uses scipy.stats for real statistical calculations (not AI approximations)
+
+## Development Status
+
+This project is under active development. Current status:
+
+### Working Features
+- Fire detection queries (historical and real-time)
+- Monthly fire breakdown analysis
+- High FRP fire identification
+- Fire-climate correlation with real statistics
+- Forest loss data and trends
+- Interactive map visualization
+- Natural language query interface
+
+### In Progress / Experimental
+- Air quality monitoring
+- Flood risk visualization
+- Urban change detection
+- Water change detection
+- Multi-year comparison reports
+
+### Not Yet Implemented
+- Docker containerization and Docker Compose setup
+- Production deployment configurations
+- Kubernetes manifests
+- CI/CD pipelines
+- Comprehensive test coverage
+- Rate limiting for API endpoints
+- User authentication and authorization
+
+## Roadmap
+
+### Near-term
+- [ ] Docker images and Docker Compose for easy deployment
+- [ ] Production deployment guide (AWS/GCP/Azure)
+- [ ] Comprehensive test suite
+- [ ] API rate limiting and authentication
+- [ ] Expanded country support for historical data
+
+### Mid-term
+- [ ] Integration with Sentinel Hub for high-resolution imagery
+- [ ] Real-time alerting system for fire/flood events
+- [ ] Batch processing for large-scale analysis
+- [ ] Advanced visualization tools (3D terrain, time-series animations)
+
+### Long-term
+- [ ] Support for custom ML models and analysis pipelines
+- [ ] Collaborative analysis and sharing features
+- [ ] Mobile application
+- [ ] Multi-language support
 
 ## Development
 
@@ -267,22 +366,6 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-## Deployment
-
-### Docker Deployment
-```bash
-# Build and run with docker-compose
-docker-compose up -d
-```
-
-### Production Considerations
-- Use PostgreSQL instead of SQLite for production
-- Enable HTTPS and proper CORS settings
-- Set up Redis with persistence
-- Configure proper logging and monitoring
-- Use environment-specific configurations
-- Implement rate limiting for API endpoints
-
 ## Contributing
 
 Contributions are welcome! Please:
@@ -292,17 +375,6 @@ Contributions are welcome! Please:
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
-
-## Roadmap
-
-- [ ] Integration with Sentinel Hub for high-resolution imagery
-- [ ] Support for custom ML models and analysis pipelines
-- [ ] Collaborative analysis and sharing features
-- [ ] Mobile application
-- [ ] Real-time alerting system
-- [ ] Advanced visualization tools (3D terrain, time-series animations)
-- [ ] Multi-language support
-- [ ] Batch processing for large-scale analysis
 
 ## License
 
@@ -320,7 +392,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 Daniyal Khan - [LinkedIn](https://www.linkedin.com/in/daniyal-khan-7b80b02a6/)
 
-Project Link: [https://github.com/Daniyal-arch/geowise](https://github.com/yourusername/geowise)
+Project Link: [https://github.com/Daniyal-arch/geowise](https://github.com/Daniyal-arch/geowise)
 
 ---
 
