@@ -1,0 +1,60 @@
+services:
+  # Backend API Service
+  - type: web
+    name: geowise-backend
+    runtime: python
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: APP_NAME
+        value: GEOWISE API
+      - key: APP_VERSION
+        value: 0.1.0
+      - key: ENVIRONMENT
+        value: production
+      - key: API_V1_STR
+        value: /api/v1
+      - key: DEBUG
+        value: false
+      # Database - SQLite (file-based, no external DB needed)
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./geowise.db
+      # Redis - Optional (comment out if not using)
+      # - key: REDIS_URL
+      #   sync: false
+      # - key: CELERY_BROKER_URL
+      #   sync: false
+      # - key: CELERY_RESULT_BACKEND
+      #   sync: false
+      # External API Keys (add these in Render Dashboard)
+      - key: NASA_FIRMS_API_KEY
+        sync: false
+      - key: GFW_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # API Base URLs
+      - key: OPEN_METEO_BASE_URL
+        value: https://archive-api.open-meteo.com/v1/archive
+      - key: WORLD_BANK_BASE_URL
+        value: https://api.worldbank.org/v2
+      # H3 Spatial Configuration
+      - key: H3_DISPLAY_RESOLUTION
+        value: 9
+      - key: H3_ANALYSIS_RESOLUTION
+        value: 5
+      # Cache Settings
+      - key: CACHE_TTL
+        value: 3600
+      # Logging
+      - key: LOG_LEVEL
+        value: INFO
+      # CORS - Allow frontend origin (update after deploying frontend)
+      - key: ALLOWED_ORIGINS
+        value: "*"
