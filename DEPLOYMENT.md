@@ -46,7 +46,7 @@ Render will auto-detect the `render.yaml` file, but verify these settings:
 | **Name** | `geowise-backend` (or your choice) |
 | **Region** | Oregon (US West) or closest to you |
 | **Branch** | `main` |
-| **Root Directory** | Leave empty |
+| **Root Directory** | `backend` |
 | **Runtime** | Python 3 |
 | **Build Command** | `pip install -r requirements.txt` |
 | **Start Command** | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
@@ -165,7 +165,7 @@ After deploying frontend, you need to allow requests from your Vercel domain.
 
 #### Option B: Update in Code
 
-Edit [app/main.py:26-31](app/main.py#L26-L31) and update CORS:
+Edit `backend/app/main.py` and update CORS:
 
 ```python
 app.add_middleware(
@@ -199,7 +199,7 @@ Then commit and push to trigger redeployment.
 ### Backend Issues
 
 **Problem: Build fails with "No module named 'app'"**
-- Solution: Make sure `Root Directory` is empty (not `backend/`)
+- Solution: Make sure `Root Directory` is set to `backend`
 
 **Problem: "Database is locked" errors**
 - Solution: SQLite works fine on Render. If you see this, it's due to concurrent requests. Consider adding retry logic or switch to PostgreSQL.

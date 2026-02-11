@@ -6,7 +6,7 @@
 2. Go to https://dashboard.render.com/
 3. New + → Web Service → Connect your repo
 4. Settings:
-   - **Root Directory**: Leave empty
+   - **Root Directory**: `backend`
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 5. Add environment variables:
