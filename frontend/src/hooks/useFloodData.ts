@@ -59,7 +59,7 @@ export function useFloodDetectionQuick(
     queryFn: () => (params ? detectFloodQuick(params) : Promise.reject('No params')),
     enabled: enabled && !!params,
     staleTime: 30 * 60 * 1000, // 30 minutes (flood data doesn't change frequently)
-    gcTime: 60 * 60 * 1000, // 1 hour cache
+    cacheTime: 60 * 60 * 1000, // 1 hour cache
   });
 }
 
